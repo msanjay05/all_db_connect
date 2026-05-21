@@ -339,13 +339,17 @@ label {
     width: 7px;
     height: 7px;
     border-radius: 50%;
-    background: #22c55e;
+    background: #52525b;
 }
 
 .connection-chip.active {
     border-color: #3b2d72;
     background: #251c4a;
     color: #a78bfa;
+}
+
+.connection-chip.active span {
+    background: #22c55e;
 }
 
 .connection-list,
@@ -497,8 +501,7 @@ label {
     padding: 0;
 }
 
-.database-select,
-.row-limit {
+.database-select {
     height: 30px;
     border-color: #282832;
     border-radius: 6px;
@@ -541,47 +544,6 @@ label {
     background: #111116;
     color: #d6d6dc;
     padding: 5px 9px;
-}
-
-.schema-database-title {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-height: 26px;
-    color: #e4e4e7;
-    font-size: 14px;
-    font-weight: 700;
-    padding: 0 4px;
-}
-
-.database-icon {
-    position: relative;
-    width: 12px;
-    height: 13px;
-    flex: 0 0 12px;
-    border: 1.5px solid #60a5fa;
-    border-radius: 50% / 18%;
-}
-
-.database-icon::before,
-.database-icon::after {
-    content: "";
-    position: absolute;
-    left: -1.5px;
-    right: -1.5px;
-    height: 5px;
-    border: 1.5px solid #60a5fa;
-    border-radius: 50%;
-}
-
-.database-icon::before {
-    top: -2px;
-    background: #151519;
-}
-
-.database-icon::after {
-    bottom: -2px;
-    border-top: 0;
 }
 
 .table-node {
@@ -843,6 +805,50 @@ label {
     padding: 0;
 }
 
+.pagination-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex: 0 0 auto;
+    border: 1px solid #243244;
+    border-top: 0;
+    background: #101827;
+    color: #8fa3bd;
+    font-size: 12px;
+    padding: 7px 10px;
+}
+
+.pagination-controls {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+.pagination-controls label {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: #8fa3bd;
+    font-size: 12px;
+}
+
+.pagination-controls select {
+    width: 72px;
+    height: 28px;
+    border-radius: 6px;
+    font-size: 12px;
+    padding: 3px 6px;
+}
+
+.pagination-controls button {
+    height: 28px;
+    padding: 4px 8px;
+    font-size: 12px;
+}
+
 .table-wrap {
     flex: 1 1 auto;
     height: 0;
@@ -926,6 +932,9 @@ label {
 }
 
 .result-cell-content .copy-cell-button {
+    flex: 0 0 22px;
+    min-width: 22px;
+    overflow: visible;
     opacity: 0;
 }
 

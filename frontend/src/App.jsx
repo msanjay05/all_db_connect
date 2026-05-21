@@ -33,6 +33,7 @@ const mysqlKeywords = [
     'MAX', 'DISTINCT', 'AS', 'ON', 'AND', 'OR', 'NOT', 'NULL', 'IS', 'LIKE',
     'IN', 'BETWEEN', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END',
 ];
+const DEFAULT_RESULT_PAGE_SIZE = 50;
 
 function createQueryTab(id) {
     return {
@@ -44,6 +45,8 @@ function createQueryTab(id) {
         showFilters: false,
         columnFilters: {},
         sort: {column: '', direction: ''},
+        resultPage: 1,
+        resultPageSize: DEFAULT_RESULT_PAGE_SIZE,
     };
 }
 
@@ -94,6 +97,8 @@ function App() {
     const activeResultColumns = activeTab?.result?.columns || [];
     const activeColumnFilters = activeTab?.columnFilters || {};
     const activeSort = activeTab?.sort || {column: '', direction: ''};
+    const activeResultPageSize = activeTab?.resultPageSize || DEFAULT_RESULT_PAGE_SIZE;
+    const activeResultPage = activeTab?.resultPage || 1;
 
     const filteredRows = useMemo(() => {
         const columnsByName = new Map(activeResultColumns.map((column) => [column.name, column]));
@@ -125,6 +130,14 @@ function App() {
             compareSortValues(left[activeSort.column], right[activeSort.column]) * (activeSort.direction === 'desc' ? -1 : 1),
         );
     }, [activeResultRows, activeResultColumns, activeColumnFilters, activeSort]);
+
+    const resultPageCount = Math.max(1, Math.ceil(filteredRows.length / activeResultPageSize));
+    const currentResultPage = Math.min(Math.max(activeResultPage, 1), resultPageCount);
+    const resultPageStart = (currentResultPage - 1) * activeResultPageSize;
+    const paginatedRows = useMemo(
+        () => filteredRows.slice(resultPageStart, resultPageStart + activeResultPageSize),
+        [filteredRows, resultPageStart, activeResultPageSize],
+    );
 
     const filteredSchemaTables = useMemo(() => {
         const search = tableFilter.trim().toLowerCase();
@@ -189,6 +202,7 @@ function App() {
                 ...(tab.columnFilters || {}),
                 [column]: value,
             },
+            resultPage: 1,
         }));
     }, [updateActiveTab]);
 
@@ -196,25 +210,33 @@ function App() {
         updateActiveTab((tab) => {
             const nextFilters = {...(tab.columnFilters || {})};
             delete nextFilters[column];
-            return {columnFilters: nextFilters};
+            return {columnFilters: nextFilters, resultPage: 1};
         });
     }, [updateActiveTab]);
 
     function clearAllColumnFilters() {
-        updateActiveTab({columnFilters: {}});
+        updateActiveTab({columnFilters: {}, resultPage: 1});
     }
 
     const toggleResultSort = useCallback((column) => {
         updateActiveTab((tab) => {
             const current = tab.sort || {column: '', direction: ''};
             if (current.column !== column) {
-                return {sort: {column, direction: 'asc'}};
+                return {sort: {column, direction: 'asc'}, resultPage: 1};
             }
             if (current.direction === 'asc') {
-                return {sort: {column, direction: 'desc'}};
+                return {sort: {column, direction: 'desc'}, resultPage: 1};
             }
-            return {sort: {column: '', direction: ''}};
+            return {sort: {column: '', direction: ''}, resultPage: 1};
         });
+    }, [updateActiveTab]);
+
+    const updateResultPage = useCallback((page) => {
+        updateActiveTab({resultPage: page});
+    }, [updateActiveTab]);
+
+    const updateResultPageSize = useCallback((pageSize) => {
+        updateActiveTab({resultPageSize: pageSize, resultPage: 1});
     }, [updateActiveTab]);
 
     const copyText = useCallback(async (text, message) => {
@@ -452,11 +474,11 @@ function App() {
             return;
         }
         setIsRunning(true);
-        updateQueryTab(tabId, {sql: fullSql, result: null});
+        updateQueryTab(tabId, {sql: fullSql, result: null, resultPage: 1});
         setStatus(mode === 'explain' ? 'Explaining query...' : 'Running query...');
         try {
             const result = await ExecuteQuery({connectionId: connectionID, database, sql, limit: tab.limit || 100});
-            updateQueryTab(tabId, {result});
+            updateQueryTab(tabId, {result, resultPage: 1});
             setStatus(result.success ? `${mode === 'explain' ? 'Explain completed' : 'Query completed'} in ${result.durationMs} ms` : result.error);
             refreshHistory();
         } catch (error) {
@@ -703,18 +725,6 @@ function App() {
                             />
                             <button className="sidebar-refresh" onClick={() => loadSchema()} disabled={!selectedConnectionId || !selectedDatabase} title="Refresh schema">↻</button>
                         </div>
-                        <div className="schema-database-title">
-                            <span className="database-icon" />
-                            <strong>{schema.database || selectedDatabase}</strong>
-                        </div>
-                        <select className="row-limit" value={activeTab?.limit || 100} onChange={(event) => updateActiveTab({limit: Number(event.target.value)})}>
-                            <option value="50">50 rows</option>
-                            <option value="100">100 rows</option>
-                            <option value="250">250 rows</option>
-                            <option value="500">500 rows</option>
-                            <option value="1000">1000 rows</option>
-                            <option value="5000">5000 rows</option>
-                        </select>
                     </div>
                     <div className="schema-tree">
                         {filteredSchemaTables.map((table) => (
@@ -875,7 +885,8 @@ function App() {
                     {activeTab?.result?.error && <div className="error-box">{activeTab.result.error}</div>}
                     <ResultGrid
                         columns={activeTab?.result?.columns || []}
-                        rows={filteredRows}
+                        rows={paginatedRows}
+                        rowOffset={resultPageStart}
                         showFilters={activeTab?.showFilters}
                         columnFilters={activeTab?.columnFilters || {}}
                         onFilterChange={updateColumnFilter}
@@ -884,8 +895,44 @@ function App() {
                         sort={activeSort}
                         onSort={toggleResultSort}
                     />
+                    {activeTab?.result?.columns?.length > 0 && (
+                        <div className="pagination-bar">
+                            <span>
+                                {filteredRows.length === 0
+                                    ? '0 rows'
+                                    : `${resultPageStart + 1}-${resultPageStart + paginatedRows.length} of ${filteredRows.length} rows`}
+                            </span>
+                            <div className="pagination-controls">
+                                <label>
+                                    Rows
+                                    <select
+                                        value={activeResultPageSize}
+                                        onChange={(event) => updateResultPageSize(Number(event.target.value))}
+                                    >
+                                        <option value="25">25</option>
+                                        <option value="50">50</option>
+                                        <option value="100">100</option>
+                                        <option value="250">250</option>
+                                    </select>
+                                </label>
+                                <button type="button" onClick={() => updateResultPage(1)} disabled={currentResultPage === 1}>
+                                    First
+                                </button>
+                                <button type="button" onClick={() => updateResultPage(currentResultPage - 1)} disabled={currentResultPage === 1}>
+                                    Prev
+                                </button>
+                                <span>Page {currentResultPage} of {resultPageCount}</span>
+                                <button type="button" onClick={() => updateResultPage(currentResultPage + 1)} disabled={currentResultPage === resultPageCount}>
+                                    Next
+                                </button>
+                                <button type="button" onClick={() => updateResultPage(resultPageCount)} disabled={currentResultPage === resultPageCount}>
+                                    Last
+                                </button>
+                            </div>
+                        </div>
+                    )}
                     <div className="result-status">
-                        <span>{activeTab?.result ? resultSummary(activeTab.result, filteredRows.length) : 'No query executed'}</span>
+                        <span>{activeTab?.result ? resultSummary(activeTab.result, paginatedRows.length) : 'No query executed'}</span>
                         <span>{activeTab?.result ? `Duration: ${formatDuration(activeTab.result.durationMs)}` : 'Ready'}</span>
                     </div>
                 </section>
@@ -915,7 +962,7 @@ function App() {
     )
 }
 
-const ResultGrid = memo(function ResultGrid({columns, rows, showFilters, columnFilters, onFilterChange, onFilterClear, onCopyText, sort, onSort}) {
+const ResultGrid = memo(function ResultGrid({columns, rows, rowOffset = 0, showFilters, columnFilters, onFilterChange, onFilterClear, onCopyText, sort, onSort}) {
     const handleCellCopy = useCallback((event) => {
         const target = event.target.closest?.('.copy-cell-icon');
         if (!target) {
@@ -958,9 +1005,9 @@ const ResultGrid = memo(function ResultGrid({columns, rows, showFilters, columnF
                                             className="copy-cell-button"
                                             onClick={() => onCopyText(
                                                 rows.map((row) => escapeCsvValue(row[column.name])).join(','),
-                                                `Copied ${rows.length} values from ${column.name}`,
+                                                `Copied ${rows.length} visible values from ${column.name}`,
                                             )}
-                                            title={`Copy all ${column.name} values as comma-separated text`}
+                                            title={`Copy visible ${column.name} values as comma-separated text`}
                                         >
                                             ⧉
                                         </button>
@@ -1069,7 +1116,7 @@ const ResultGrid = memo(function ResultGrid({columns, rows, showFilters, columnF
                 <tbody onClick={handleCellCopy}>
                     {rows.map((row, rowIndex) => (
                         <tr key={rowIndex}>
-                            <td className="row-number-cell">{rowIndex + 1}</td>
+                            <td className="row-number-cell">{rowOffset + rowIndex + 1}</td>
                             {columns.map((column, columnIndex) => (
                                 <td key={column.name}>
                                     <div className="result-cell-content">
