@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="All DB Connector">
+  <rect width="128" height="128" rx="28" fill="#0f172a"/>
+  <path d="M35 37c0-10 13-18 29-18s29 8 29 18v54c0 10-13 18-29 18s-29-8-29-18V37z" fill="#2563eb"/>
+  <ellipse cx="64" cy="37" rx="29" ry="18" fill="#60a5fa"/>
+  <path d="M35 56c0 10 13 18 29 18s29-8 29-18" fill="none" stroke="#bfdbfe" stroke-width="6" stroke-linecap="round"/>
+  <path d="M35 74c0 10 13 18 29 18s29-8 29-18" fill="none" stroke="#bfdbfe" stroke-width="6" stroke-linecap="round"/>
+  <path d="M42 95c5 6 13 10 22 10s17-4 22-10" fill="none" stroke="#93c5fd" stroke-width="6" stroke-linecap="round"/>
+</svg>
