@@ -347,7 +347,7 @@ func runQuery(ctx context.Context, conn *sql.Conn, sqlText string) (models.Query
 
 		row := make(map[string]interface{}, len(columnNames))
 		for i, name := range columnNames {
-			row[name] = normalizeValue(values[i])
+			row[name] = normalizeValue(values[i], columns[i].Type)
 		}
 		resultRows = append(resultRows, row)
 	}
@@ -363,11 +363,17 @@ func runQuery(ctx context.Context, conn *sql.Conn, sqlText string) (models.Query
 	}, nil
 }
 
-func normalizeValue(value interface{}) interface{} {
+func normalizeValue(value interface{}, columnType string) interface{} {
 	switch typed := value.(type) {
 	case nil:
 		return nil
 	case []byte:
+		if strings.EqualFold(columnType, "BIT") && len(typed) == 1 {
+			if typed[0] == 0 {
+				return 0
+			}
+			return 1
+		}
 		return string(typed)
 	case time.Time:
 		return typed.Format(time.RFC3339)

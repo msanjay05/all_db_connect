@@ -317,12 +317,50 @@ label {
     padding: 8px 34px 8px 12px;
 }
 
-.active-connection-select small {
+.active-connection-meta {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    min-width: 0;
+}
+
+.active-connection-meta small {
     overflow: hidden;
     color: #777783;
     font-size: 12px;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+.connection-status-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    min-width: 14px;
+    border-radius: 50%;
+    font-size: 10px;
+    font-weight: 800;
+    line-height: 1;
+}
+
+.connection-status-icon.connected {
+    background: rgba(34, 197, 94, 0.16);
+    color: #22c55e;
+}
+
+.connection-status-icon.connected::before {
+    content: "↔";
+}
+
+.connection-status-icon.disconnected {
+    background: rgba(113, 113, 122, 0.18);
+    color: #71717a;
+}
+
+.connection-status-icon.disconnected::before {
+    content: "×";
 }
 
 .connection-chips {
@@ -345,21 +383,10 @@ label {
     padding: 3px 9px;
 }
 
-.connection-chip span {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: #52525b;
-}
-
 .connection-chip.active {
     border-color: #3b2d72;
     background: #251c4a;
     color: #a78bfa;
-}
-
-.connection-chip.active span {
-    background: #22c55e;
 }
 
 .connection-list,
@@ -894,10 +921,10 @@ label {
 
 .result-table th,
 .result-table td {
-    min-width: 160px;
-    max-width: 420px;
+    min-width: 100px;
+    max-width: 340px;
     border-bottom: 1px solid #243244;
-    padding: 8px 10px;
+    padding: 7px 6px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -915,7 +942,7 @@ label {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 8px;
+    gap: 6px;
     min-width: 0;
 }
 

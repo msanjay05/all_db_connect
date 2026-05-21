@@ -820,7 +820,12 @@ function App() {
                                     <option key={profile.id} value={profile.id}>{profile.name}</option>
                                 ))}
                             </select>
-                            {selectedProfile && <small title={selectedProfile.host}>{selectedProfile.host}</small>}
+                            {selectedProfile && (
+                                <div className="active-connection-meta" title={selectedProfile.host}>
+                                    <span className="connection-status-icon connected" aria-hidden="true" />
+                                    <small>{selectedProfile.host}</small>
+                                </div>
+                            )}
                         </div>
                         <button className="secondary connection-action-button" onClick={editProfile} disabled={!selectedConnectionId} title="Edit connection">
                             ✎
@@ -830,17 +835,20 @@ function App() {
                         </button>
                     </div>
                     <div className="connection-chips">
-                        {profiles.slice(0, 4).map((profile) => (
+                        {profiles.slice(0, 4).map((profile) => {
+                            const isActive = profile.id === selectedConnectionId;
+                            return (
                             <button
                                 key={profile.id}
-                                className={profile.id === selectedConnectionId ? 'connection-chip active' : 'connection-chip'}
+                                className={isActive ? 'connection-chip active' : 'connection-chip'}
                                 onClick={() => selectProfile(profile)}
-                                title={profile.host}
+                                title={`${profile.host} (${isActive ? 'connected' : 'disconnected'})`}
                             >
-                                <span />
+                                <span className={isActive ? 'connection-status-icon connected' : 'connection-status-icon disconnected'} aria-hidden="true" />
                                 {profile.name}
                             </button>
-                        ))}
+                            );
+                        })}
                     </div>
                     <div className="connection-picker">
                         <button className="new-connection-button" onClick={newProfile}>+ New Connection</button>
