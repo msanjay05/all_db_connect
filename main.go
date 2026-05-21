@@ -17,7 +17,7 @@ func main() {
 
 	// Create application with options
 	err := wails.Run(&options.App{
-		Title:  "MySQL Query App",
+		Title:  "All DB Connector",
 		Width:  1440,
 		Height: 900,
 		AssetServer: &assetserver.Options{

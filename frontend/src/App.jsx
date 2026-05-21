@@ -753,7 +753,7 @@ function App() {
                 )}
                 <div className="sidebar-footer">
                     <button disabled>▤ Backup & Restore</button>
-                    <button disabled>ⓘ About DB Connect</button>
+                    <button disabled>ⓘ About All DB Connector</button>
                 </div>
             </aside>
 

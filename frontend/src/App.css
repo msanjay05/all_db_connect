@@ -514,7 +514,8 @@ label {
     gap: 0;
     flex: 1 1 auto;
     min-height: 0;
-    overflow: auto;
+    overflow-x: hidden;
+    overflow-y: auto;
     text-align: left;
     padding: 0 0 80px;
 }
@@ -754,6 +755,9 @@ label {
 .index-list {
     display: grid;
     gap: 4px;
+    box-sizing: border-box;
+    width: calc(100% - 34px);
+    max-width: calc(100% - 34px);
     margin: 4px 0 4px 34px;
     padding-top: 6px;
     border-top: 1px solid #243244;
@@ -762,15 +766,21 @@ label {
 .index-item {
     display: grid;
     gap: 2px;
+    min-width: 0;
     color: #d8e4f4;
     font-size: 12px;
 }
 
+.index-item span:first-child {
+    overflow-wrap: anywhere;
+    white-space: normal;
+}
+
 .index-item span:last-child {
     color: #8fa3bd;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    overflow-wrap: anywhere;
+    white-space: normal;
 }
 
 .editor-panel {
