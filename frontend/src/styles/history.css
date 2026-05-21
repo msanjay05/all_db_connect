@@ -1,0 +1,28 @@
+.history-item {
+    grid-template-columns: auto 1fr;
+}
+
+.history-item code,
+.history-item small {
+    grid-column: 2;
+}
+
+.history-item code {
+    overflow: hidden;
+    color: #c8d7eb;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.success-dot,
+.error-dot {
+    width: 9px;
+    height: 9px;
+    margin-top: 4px;
+    border-radius: 50%;
+    background: #34d399;
+}
+
+.error-dot {
+    background: #fb7185;
+}

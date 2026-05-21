@@ -1,0 +1,133 @@
+.topbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+    padding: 4px 8px;
+    background: #10151d;
+    border-bottom: 1px solid #243244;
+}
+
+.query-tabs {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+    white-space: nowrap;
+}
+
+.query-tab {
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    height: 27px;
+    flex: 0 0 auto;
+    min-width: 86px;
+    max-width: 140px;
+    border: 1px solid #243244;
+    border-radius: 7px;
+    background: #121821;
+    color: #c8d7eb;
+    padding: 4px 8px;
+}
+
+.query-tab.active {
+    background: #1a2330;
+    color: #ffffff;
+}
+
+.query-tab.add {
+    justify-content: center;
+    min-width: 28px;
+    width: 28px;
+}
+
+.tab-close {
+    color: #7c8798;
+    font-size: 15px;
+    line-height: 1;
+}
+
+.tab-close:hover {
+    color: #ffffff;
+}
+
+.toolbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    justify-self: end;
+    flex: 0 0 auto;
+    min-width: max-content;
+    position: relative;
+    z-index: 3;
+}
+
+.query-limit-select {
+    width: 96px;
+    height: 26px;
+    border-radius: 6px;
+    font-size: 12px;
+    padding: 3px 6px;
+}
+
+.run-button {
+    flex: 0 0 auto;
+    min-width: 28px;
+    white-space: nowrap;
+    position: relative;
+    right: auto;
+    background: #16813a;
+    border-color: #1f8f45;
+}
+
+.icon-button {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 26px;
+    min-width: 28px;
+    padding: 0;
+    font-size: 12px;
+    line-height: 1;
+}
+
+.icon-button[data-tooltip]::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    left: 50%;
+    top: calc(100% + 7px);
+    z-index: 20;
+    transform: translateX(-50%);
+    border: 1px solid #303b4d;
+    border-radius: 6px;
+    background: #0d1117;
+    color: #e5edf8;
+    font-size: 12px;
+    font-weight: 500;
+    opacity: 0;
+    padding: 5px 8px;
+    pointer-events: none;
+    white-space: nowrap;
+}
+
+.icon-button[data-tooltip]:hover::after {
+    opacity: 1;
+}
+
+.kill-button {
+    background: #8b1f1f;
+    border-color: #9f2828;
+}
+
+.editor-panel {
+    min-height: 0;
+    border-bottom: 1px solid #243244;
+}

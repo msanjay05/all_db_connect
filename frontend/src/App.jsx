@@ -1,17 +1,15 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import Editor from '@monaco-editor/react';
 import './App.css';
-import CompactSelect from './components/CompactSelect';
-import ResultGrid from './components/ResultGrid';
+import HistoryPanel from './components/HistoryPanel';
+import QueryToolbar from './components/QueryToolbar';
+import ResultsPanel from './components/ResultsPanel';
+import Sidebar from './components/Sidebar';
+import UpdateConfirmDialog from './components/UpdateConfirmDialog';
 import {createQueryTab, DEFAULT_RESULT_PAGE_SIZE, normalizeWorkspace} from './constants/query';
 import {
-    columnIconClass,
-    columnIconLabel,
     compareSortValues,
     errorMessage,
-    formatColumnMeta,
-    formatDuration,
-    formatRowCount,
     formatValue,
     isDateColumn,
     isNumericColumn,
@@ -22,7 +20,6 @@ import {
     matchesNumericFilter,
     matchesSpecialFilter,
     primaryKeyNamesForTable,
-    resultSummary,
     resultToCsv,
     sanitizeFileName,
     sortColumnsByName,
@@ -229,10 +226,15 @@ function App() {
         if (!selectedConnectionId) {
             return;
         }
-        setConnectionWorkspaces((current) => ({
-            ...current,
-            [selectedConnectionId]: normalizeWorkspace({queryTabs, activeTabId}),
-        }));
+        const workspace = normalizeWorkspace({queryTabs, activeTabId});
+        setConnectionWorkspaces((current) => {
+            const next = {
+                ...current,
+                [selectedConnectionId]: workspace,
+            };
+            connectionWorkspacesRef.current = next;
+            return next;
+        });
     }, [queryTabs, activeTabId, selectedConnectionId]);
 
     const updateQueryTab = useCallback((tabId, updater) => {
@@ -322,6 +324,18 @@ function App() {
         }
     }, []);
 
+    function saveWorkspaceForConnection(connectionId, workspace) {
+        if (!connectionId) {
+            return;
+        }
+        const normalized = normalizeWorkspace(workspace);
+        connectionWorkspacesRef.current = {
+            ...connectionWorkspacesRef.current,
+            [connectionId]: normalized,
+        };
+        setConnectionWorkspaces(connectionWorkspacesRef.current);
+    }
+
     function currentWorkspaceSnapshot() {
         const tabs = queryTabsRef.current.length ? queryTabsRef.current : [createQueryTab(1)];
         const activeId = activeTabIdRef.current || tabs[0].id;
@@ -332,10 +346,52 @@ function App() {
         return normalizeWorkspace({queryTabs: snapshotTabs, activeTabId: activeId});
     }
 
+    function workspaceForConnection(connectionId) {
+        return normalizeWorkspace(connectionWorkspacesRef.current[connectionId]);
+    }
+
+    function applyWorkspace(workspace) {
+        const normalized = normalizeWorkspace(workspace);
+        editorRef.current = null;
+        setQueryTabs(normalized.queryTabs);
+        setActiveTabId(normalized.activeTabId);
+        setResultEdits({});
+        setResultEditError('');
+        setResultEditSuccess('');
+        setPendingUpdateBatch(null);
+    }
+
     function restoreConnectionWorkspace(connectionId) {
-        const workspace = normalizeWorkspace(connectionWorkspacesRef.current[connectionId]);
-        setQueryTabs(workspace.queryTabs);
-        setActiveTabId(workspace.activeTabId);
+        const workspace = workspaceForConnection(connectionId);
+        applyWorkspace(workspace);
+    }
+
+    function switchConnectionWorkspace(nextConnectionId) {
+        const currentConnectionId = selectedConnectionIdRef.current;
+        if (currentConnectionId && currentConnectionId !== nextConnectionId) {
+            saveWorkspaceForConnection(currentConnectionId, currentWorkspaceSnapshot());
+        }
+        if (nextConnectionId) {
+            restoreConnectionWorkspace(nextConnectionId);
+        } else {
+            applyWorkspace({queryTabs: [createQueryTab(1)], activeTabId: 1});
+        }
+    }
+
+    function removeWorkspaceForConnection(connectionId) {
+        if (!connectionId) {
+            return;
+        }
+        const nextWorkspaces = {...connectionWorkspacesRef.current};
+        delete nextWorkspaces[connectionId];
+        connectionWorkspacesRef.current = nextWorkspaces;
+        setConnectionWorkspaces(nextWorkspaces);
+    }
+
+    function resetConnectionData() {
+        setDatabases([]);
+        setSelectedDatabase('');
+        setSchema({database: '', tables: []});
     }
 
     async function refreshProfiles() {
@@ -381,20 +437,11 @@ function App() {
     }
 
     function selectProfile(profile) {
-        const currentConnectionId = selectedConnectionIdRef.current;
-        if (currentConnectionId) {
-            setConnectionWorkspaces((current) => ({
-                ...current,
-                [currentConnectionId]: currentWorkspaceSnapshot(),
-            }));
-        }
-        restoreConnectionWorkspace(profile.id);
+        switchConnectionWorkspace(profile.id);
         setSelectedConnectionId(profile.id);
         setShowConnectionForm(false);
         setProfileForm(defaultProfile);
-        setDatabases([]);
-        setSelectedDatabase('');
-        setSchema({database: '', tables: []});
+        resetConnectionData();
         setStatus(`Selected ${profile.name}`);
         loadDatabases(profile.id, profile.database);
     }
@@ -428,19 +475,11 @@ function App() {
     }
 
     function disconnectProfile() {
-        const currentConnectionId = selectedConnectionIdRef.current;
-        if (currentConnectionId) {
-            setConnectionWorkspaces((current) => ({
-                ...current,
-                [currentConnectionId]: currentWorkspaceSnapshot(),
-            }));
-        }
+        switchConnectionWorkspace('');
         setSelectedConnectionId('');
         setShowConnectionForm(false);
         setProfileForm(defaultProfile);
-        setDatabases([]);
-        setSelectedDatabase('');
-        setSchema({database: '', tables: []});
+        resetConnectionData();
         setStatus('Connection disabled');
     }
 
@@ -500,13 +539,12 @@ function App() {
     async function saveProfile() {
         try {
             const saved = await SaveConnectionProfile({...profileForm, database: ''});
+            switchConnectionWorkspace(saved.id);
             setSelectedConnectionId(saved.id);
             setProfileForm(defaultProfile);
             setShowConnectionForm(false);
             if (!profileForm.id) {
-                setDatabases([]);
-                setSelectedDatabase('');
-                setSchema({database: '', tables: []});
+                resetConnectionData();
             }
             setStatus(`Saved ${saved.name}`);
             await refreshProfiles();
@@ -526,17 +564,10 @@ function App() {
         }
         try {
             await DeleteConnectionProfile(selectedConnectionId);
-            setConnectionWorkspaces((current) => {
-                const next = {...current};
-                delete next[selectedConnectionId];
-                return next;
-            });
+            removeWorkspaceForConnection(selectedConnectionId);
             setSelectedConnectionId('');
-            setQueryTabs([createQueryTab(1)]);
-            setActiveTabId(1);
-            setDatabases([]);
-            setSelectedDatabase('');
-            setSchema({database: '', tables: []});
+            applyWorkspace({queryTabs: [createQueryTab(1)], activeTabId: 1});
+            resetConnectionData();
             await refreshProfiles();
             setStatus('Deleted connection profile');
         } catch (error) {
@@ -862,172 +893,36 @@ function App() {
 
     return (
         <div className={showHistory ? 'workbench show-history' : 'workbench'}>
-            <aside className="sidebar">
-                <section className="sidebar-connection-card">
-                    <div className="active-connection-row">
-                        <div className="active-connection-select">
-                            <CompactSelect
-                                className="connection-select"
-                                value={selectedConnectionId}
-                                options={connectionOptions}
-                                placeholder="Select connection"
-                                onChange={handleConnectionChange}
-                            />
-                            {selectedProfile && (
-                                <div className="active-connection-meta" title={selectedProfile.host}>
-                                    <span className="connection-status-icon connected" aria-hidden="true" />
-                                    <small>{selectedProfile.host}</small>
-                                </div>
-                            )}
-                        </div>
-                        <button className="secondary connection-action-button" onClick={editProfile} disabled={!selectedConnectionId} title="Edit connection" aria-label="Edit connection">
-                            <svg className="connection-action-svg" viewBox="0 0 16 16" aria-hidden="true">
-                                <path d="M3 11.5V13h1.5L12 5.5 10.5 4 3 11.5Z" />
-                                <path d="m9.8 4.7 1.5 1.5" />
-                            </svg>
-                        </button>
-                        <button className="secondary connection-action-button" onClick={disconnectProfile} disabled={!selectedConnectionId} title="Disable connection" aria-label="Disable connection">
-                            <svg className="connection-action-svg" viewBox="0 0 16 16" aria-hidden="true">
-                                <path d="M4 4l8 8M12 4l-8 8" />
-                            </svg>
-                        </button>
-                        <button className="danger connection-action-button" onClick={deleteProfile} disabled={!selectedConnectionId} title="Delete connection" aria-label="Delete connection">
-                            <svg className="connection-action-svg" viewBox="0 0 16 16" aria-hidden="true">
-                                <path d="M5.5 5.5v6M8 5.5v6M10.5 5.5v6" />
-                                <path d="M3.5 4h9M6.5 2.5h3L10 4H6l.5-1.5Z" />
-                                <path d="M4.5 4.5 5 13h6l.5-8.5" />
-                            </svg>
-                        </button>
-                    </div>
-                    <div className="connection-chips">
-                        {profiles.slice(0, 4).map((profile) => {
-                            const isActive = profile.id === selectedConnectionId;
-                            return (
-                            <button
-                                key={profile.id}
-                                className={isActive ? 'connection-chip active' : 'connection-chip'}
-                                onClick={() => selectProfile(profile)}
-                                title={`${profile.host} (${isActive ? 'connected' : 'disconnected'})`}
-                            >
-                                <span className={isActive ? 'connection-status-icon connected' : 'connection-status-icon disconnected'} aria-hidden="true" />
-                                {profile.name}
-                            </button>
-                            );
-                        })}
-                    </div>
-                    <div className="connection-picker">
-                        <button className="new-connection-button" onClick={newProfile}>+ New Connection</button>
-                    </div>
-                </section>
-
-                {showConnectionForm && (
-                    <section className="panel form-panel">
-                        <div className="panel-title">
-                            <span>Connection Details</span>
-                            <button className="secondary" onClick={closeProfileForm}>Cancel</button>
-                        </div>
-                        <label>Name<input value={profileForm.name} onChange={(event) => updateProfileField('name', event.target.value)}/></label>
-                        <label>Host<input value={profileForm.host} onChange={(event) => updateProfileField('host', event.target.value)}/></label>
-                        <label>Port<input type="number" value={profileForm.port} onChange={(event) => updateProfileField('port', event.target.value)}/></label>
-                        <label>User<input value={profileForm.username} onChange={(event) => updateProfileField('username', event.target.value)}/></label>
-                        <label>Password<input type="password" value={profileForm.password} onChange={(event) => updateProfileField('password', event.target.value)}/></label>
-                        <label className="checkbox-label">
-                            <input
-                                type="checkbox"
-                                checked={Boolean(profileForm.readOnly)}
-                                onChange={(event) => updateProfileField('readOnly', event.target.checked)}
-                            />
-                            Read only (DQL queries only)
-                        </label>
-                        {profileForm.id && <div className="hint">Leave password blank to keep the saved password.</div>}
-                        <div className="button-row two">
-                            <button onClick={testConnection}>Test</button>
-                            <button onClick={saveProfile}>Save</button>
-                        </div>
-                        {connectionTestStatus && (
-                            <div className="connection-test-status">{connectionTestStatus}</div>
-                        )}
-                    </section>
-                )}
-
-                {selectedConnectionId && (
-                <section className="database-panel">
-                    <div className="sidebar-section-title">
-                        <span>Database</span>
-                        <button className="sidebar-refresh" onClick={() => loadDatabases()} disabled={!selectedConnectionId} title="Refresh databases">↻</button>
-                    </div>
-                    <CompactSelect
-                        className="database-select"
-                        value={selectedDatabase}
-                        options={databaseOptions}
-                        placeholder="Select database"
-                        disabled={!selectedConnectionId || databases.length === 0}
-                        onChange={selectDatabase}
-                    />
-                    {selectedConnectionId && databases.length === 0 && (
-                        <div className="hint">No databases loaded yet. Use Refresh after selecting a connection.</div>
-                    )}
-                    {selectedDatabase && (
-                        <button className="secondary full-width" onClick={() => setDefaultDatabase()}>
-                            {profiles.find((profile) => profile.id === selectedConnectionId)?.database === selectedDatabase ? 'Default database' : 'Mark as default'}
-                        </button>
-                    )}
-                </section>
-                )}
-
-                {selectedDatabase && (
-                <section className="schema-panel">
-                    <div className="table-tools">
-                        <div className="table-filter-row">
-                            <input
-                                className="table-filter"
-                                value={tableFilter}
-                                placeholder="Filter tables..."
-                                onChange={(event) => setTableFilter(event.target.value)}
-                            />
-                            <button className="sidebar-refresh" onClick={() => loadSchema()} disabled={!selectedConnectionId || !selectedDatabase} title="Refresh schema">↻</button>
-                        </div>
-                    </div>
-                    <div className="schema-tree">
-                        {filteredSchemaTables.map((table) => (
-                            <details className="table-node" key={table.name}>
-                                <summary onDoubleClick={() => insertTableReference(table)}>
-                                    <span className="table-name">
-                                        <span className="table-icon" />
-                                        <span>{table.name}</span>
-                                        <small>{formatRowCount(table.rowCount)} rows</small>
-                                    </span>
-                                    <span className="table-meta">{table.indexes?.length || 0} idx</span>
-                                </summary>
-                                {(table.columns || []).map((column) => (
-                                    <div className="column-item" key={`${table.name}.${column.name}`}>
-                                        <span>
-                                            <span className={columnIconClass(column)}>{columnIconLabel(column)}</span>
-                                            {column.name}
-                                        </span>
-                                        <span title={formatColumnMeta(column)}>{formatColumnMeta(column)}</span>
-                                    </div>
-                                ))}
-                                {(table.indexes || []).length > 0 && (
-                                    <div className="index-list">
-                                        {(table.indexes || []).map((index) => (
-                                            <div className="index-item" key={`${table.name}.${index.name}`}>
-                                                <span>{index.name}</span>
-                                                <span>{index.unique ? 'UNIQUE' : 'INDEX'} | {index.type} | {(index.columns || []).join(', ')}</span>
-                                            </div>
-                                        ))}
-                                    </div>
-                                )}
-                            </details>
-                        ))}
-                    </div>
-                </section>
-                )}
-                <div className="sidebar-footer">
-                    <button disabled>▤ Backup & Restore</button>
-                    <button disabled>ⓘ About All DB Connector</button>
-                </div>
-            </aside>
+            <Sidebar
+                selectedConnectionId={selectedConnectionId}
+                connectionOptions={connectionOptions}
+                handleConnectionChange={handleConnectionChange}
+                selectedProfile={selectedProfile}
+                editProfile={editProfile}
+                disconnectProfile={disconnectProfile}
+                deleteProfile={deleteProfile}
+                profiles={profiles}
+                selectProfile={selectProfile}
+                newProfile={newProfile}
+                showConnectionForm={showConnectionForm}
+                closeProfileForm={closeProfileForm}
+                profileForm={profileForm}
+                updateProfileField={updateProfileField}
+                testConnection={testConnection}
+                saveProfile={saveProfile}
+                connectionTestStatus={connectionTestStatus}
+                databaseOptions={databaseOptions}
+                selectedDatabase={selectedDatabase}
+                databases={databases}
+                selectDatabase={selectDatabase}
+                loadDatabases={loadDatabases}
+                setDefaultDatabase={setDefaultDatabase}
+                filteredSchemaTables={filteredSchemaTables}
+                tableFilter={tableFilter}
+                setTableFilter={setTableFilter}
+                loadSchema={loadSchema}
+                insertTableReference={insertTableReference}
+            />
 
             <main className="main">
                 {!selectedConnectionId ? (
@@ -1036,241 +931,90 @@ function App() {
                         <span>The SQL editor will appear after a connection is active.</span>
                     </section>
                 ) : (
-                <>
-                <header className="topbar">
-                    <div className="query-tabs">
-                        {queryTabs.map((tab) => (
-                            <button
-                                key={tab.id}
-                                className={tab.id === activeTabId ? 'query-tab active' : 'query-tab'}
-                                onClick={() => setActiveTabId(tab.id)}
-                            >
-                                <span>{tab.title}</span>
-                                {queryTabs.length > 1 && (
-                                    <span
-                                        className="tab-close"
-                                        onClick={(event) => {
-                                            event.stopPropagation();
-                                            closeQueryTab(tab.id);
-                                        }}
-                                    >
-                                        ×
-                                    </span>
-                                )}
-                            </button>
-                        ))}
-                        <button className="query-tab add" onClick={addQueryTab}>+</button>
-                    </div>
-                    <div className="toolbar-actions">
-                        <select
-                            className="query-limit-select"
-                            value={activeTab?.limit || 100}
-                            onChange={(event) => updateActiveTab({limit: Number(event.target.value)})}
-                            title="Default limit used when SQL has no LIMIT"
-                        >
-                            <option value="50">50 rows</option>
-                            <option value="100">100 rows</option>
-                            <option value="250">250 rows</option>
-                            <option value="500">500 rows</option>
-                            <option value="1000">1000 rows</option>
-                            <option value="5000">5000 rows</option>
-                        </select>
-                        <button className="icon-button run-button" onClick={runQuery} disabled={isRunning} title="Run query (Cmd/Ctrl + Enter)" data-tooltip="Run query">
-                            ▶
-                        </button>
-                        <button className="icon-button kill-button" onClick={killQuery} title="Kill running query" data-tooltip="Kill query">
-                            ■
-                        </button>
-                        <button className="icon-button secondary" onClick={explainQuery} disabled={isRunning} title="Explain query" data-tooltip="Explain query">
-                            ?
-                        </button>
-                        <button className="icon-button secondary" onClick={formatQuery} title="Format SQL" data-tooltip="Format SQL">
-                            {'{}'}
-                        </button>
-                        <button className="icon-button secondary" onClick={toggleHistory} title="Show recent queries" data-tooltip="History">
-                            ◷
-                        </button>
-                        <button className="icon-button secondary" onClick={saveQuery} title="Save query" data-tooltip="Save query">
-                            ⇩
-                        </button>
-                    </div>
-                </header>
-
-                <section className="editor-panel">
-                    <Editor
-                        height="100%"
-                        key={activeTab?.id}
-                        defaultLanguage="sql"
-                        theme="vs-dark"
-                        value={activeTab?.sql || ''}
-                        onChange={(value) => updateActiveTab({sql: value || ''})}
-                        onMount={handleEditorMount}
-                        options={{
-                            minimap: {enabled: false},
-                            fontSize: 14,
-                            automaticLayout: true,
-                            wordWrap: 'on',
-                            snippetSuggestions: 'none',
-                            wordBasedSuggestions: 'off',
-                        }}
-                    />
-                </section>
-
-                <section className="results-panel">
-                    <div className="results-header">
-                        <strong>Results</strong>
-                        <div className="result-filter-actions">
-                            {resultEditCount > 0 && (
-                                <div className="result-edit-actions">
-                                    <span>{resultEditCount} edit{resultEditCount === 1 ? '' : 's'}</span>
-                                    <button className="secondary" onClick={cancelResultEdits} disabled={isRunning}>
-                                        Cancel
-                                    </button>
-                                    <button onClick={showResultUpdateConfirmation} disabled={isRunning}>
-                                        Update
-                                    </button>
-                                </div>
-                            )}
-                            <button
-                                className={activeTab?.showFilters ? 'filter-toggle active' : 'filter-toggle'}
-                                disabled={!activeTab?.result?.columns?.length}
-                                onClick={toggleColumnFilters}
-                                title="Show column filters"
-                            >
-                                ⌕ Filter
-                            </button>
-                            <button
-                                className="clear-filters-button"
-                                disabled={!Object.values(activeTab?.columnFilters || {}).some((value) => String(value || '').trim())}
-                                onClick={clearAllColumnFilters}
-                                title="Clear all filters"
-                            >
-                                ⊗
-                            </button>
-                            <button
-                                className="filter-toggle export-button"
-                                disabled={isRunning || !activeTab?.result?.success || !activeTab?.result?.columns?.length}
-                                onClick={exportCsv}
-                                title="Export current loaded results to CSV"
-                            >
-                                <svg className="download-icon" viewBox="0 0 16 16" aria-hidden="true">
-                                    <path d="M8 2v7m0 0 3-3m-3 3L5 6" />
-                                    <path d="M3 11v2h10v-2" />
-                                </svg>
-                                Export
-                            </button>
-                        </div>
-                    </div>
-                    {activeTab?.result?.error && <div className="error-box">{activeTab.result.error}</div>}
-                    {resultEditError && <div className="error-box">{resultEditError}</div>}
-                    {resultEditSuccess && <div className="success-box">{resultEditSuccess}</div>}
-                    <ResultGrid
-                        columns={sortedResultColumns}
-                        rows={paginatedRows}
-                        rowOffset={resultPageStart}
-                        showFilters={activeTab?.showFilters}
-                        columnFilters={activeTab?.columnFilters || {}}
-                        onFilterChange={updateColumnFilter}
-                        onFilterClear={clearColumnFilter}
-                        onCopyText={copyText}
-                        sort={activeSort}
-                        onSort={toggleResultSort}
-                        canEdit={canEditResults}
-                        edits={resultEdits}
-                        primaryKeyNames={resultPrimaryKeyNames}
-                        onCellUpdate={requestCellUpdate}
-                    />
-                    {activeTab?.result?.columns?.length > 0 && (
-                        <div className="pagination-bar">
-                            <span>
-                                {filteredRows.length === 0
-                                    ? '0 rows'
-                                    : `${resultPageStart + 1}-${resultPageStart + paginatedRows.length} of ${filteredRows.length} rows`}
-                            </span>
-                            <div className="pagination-controls">
-                                <label>
-                                    Rows
-                                    <select
-                                        value={activeResultPageSize}
-                                        onChange={(event) => updateResultPageSize(Number(event.target.value))}
-                                    >
-                                        <option value="25">25</option>
-                                        <option value="50">50</option>
-                                        <option value="100">100</option>
-                                        <option value="250">250</option>
-                                    </select>
-                                </label>
-                                <button type="button" onClick={() => updateResultPage(1)} disabled={currentResultPage === 1}>
-                                    First
-                                </button>
-                                <button type="button" onClick={() => updateResultPage(currentResultPage - 1)} disabled={currentResultPage === 1}>
-                                    Prev
-                                </button>
-                                <span>Page {currentResultPage} of {resultPageCount}</span>
-                                <button type="button" onClick={() => updateResultPage(currentResultPage + 1)} disabled={currentResultPage === resultPageCount}>
-                                    Next
-                                </button>
-                                <button type="button" onClick={() => updateResultPage(resultPageCount)} disabled={currentResultPage === resultPageCount}>
-                                    Last
-                                </button>
-                            </div>
-                        </div>
-                    )}
-                    <div className="result-status">
-                        <span>{activeTab?.result ? resultSummary(activeTab.result, paginatedRows.length) : 'No query executed'}</span>
-                        <span>{activeTab?.result ? `Duration: ${formatDuration(activeTab.result.durationMs)}` : 'Ready'}</span>
-                    </div>
-                </section>
-                </>
+                    <>
+                        <QueryToolbar
+                            queryTabs={queryTabs}
+                            activeTabId={activeTabId}
+                            activeTab={activeTab}
+                            setActiveTabId={setActiveTabId}
+                            closeQueryTab={closeQueryTab}
+                            addQueryTab={addQueryTab}
+                            updateActiveTab={updateActiveTab}
+                            runQuery={runQuery}
+                            isRunning={isRunning}
+                            killQuery={killQuery}
+                            explainQuery={explainQuery}
+                            formatQuery={formatQuery}
+                            toggleHistory={toggleHistory}
+                            saveQuery={saveQuery}
+                        />
+                        <section className="editor-panel">
+                            <Editor
+                                height="100%"
+                                key={`${selectedConnectionId}:${activeTab?.id || 'empty'}`}
+                                defaultLanguage="sql"
+                                theme="vs-dark"
+                                value={activeTab?.sql || ''}
+                                onChange={(value) => updateActiveTab({sql: value || ''})}
+                                onMount={handleEditorMount}
+                                options={{
+                                    minimap: {enabled: false},
+                                    fontSize: 14,
+                                    automaticLayout: true,
+                                    wordWrap: 'on',
+                                    snippetSuggestions: 'none',
+                                    wordBasedSuggestions: 'off',
+                                }}
+                            />
+                        </section>
+                        <ResultsPanel
+                            resultEditCount={resultEditCount}
+                            cancelResultEdits={cancelResultEdits}
+                            showResultUpdateConfirmation={showResultUpdateConfirmation}
+                            isRunning={isRunning}
+                            activeTab={activeTab}
+                            toggleColumnFilters={toggleColumnFilters}
+                            clearAllColumnFilters={clearAllColumnFilters}
+                            sortedResultColumns={sortedResultColumns}
+                            paginatedRows={paginatedRows}
+                            resultPageStart={resultPageStart}
+                            updateColumnFilter={updateColumnFilter}
+                            clearColumnFilter={clearColumnFilter}
+                            copyText={copyText}
+                            activeSort={activeSort}
+                            toggleResultSort={toggleResultSort}
+                            canEditResults={canEditResults}
+                            resultEdits={resultEdits}
+                            resultPrimaryKeyNames={resultPrimaryKeyNames}
+                            requestCellUpdate={requestCellUpdate}
+                            resultEditError={resultEditError}
+                            resultEditSuccess={resultEditSuccess}
+                            filteredRows={filteredRows}
+                            activeResultPageSize={activeResultPageSize}
+                            updateResultPageSize={updateResultPageSize}
+                            currentResultPage={currentResultPage}
+                            updateResultPage={updateResultPage}
+                            resultPageCount={resultPageCount}
+                            exportCsv={exportCsv}
+                        />
+                    </>
                 )}
             </main>
 
             {showHistory && (
-            <aside className="history">
-                <div className="panel-title">
-                    <span>Recent Queries</span>
-                    <button className="secondary small" onClick={() => setShowHistory(false)}>Close</button>
-                </div>
-                <div className="history-list">
-                    {history.slice(0, 10).map((entry) => (
-                        <button key={entry.id} className="history-item" onClick={() => updateActiveTab({sql: entry.sql})}>
-                            <span className={entry.success ? 'success-dot' : 'error-dot'} />
-                            <strong>{entry.database || 'mysql'}</strong>
-                            <small>{entry.durationMs} ms | {entry.rowCount} rows</small>
-                            <code>{entry.sql}</code>
-                        </button>
-                    ))}
-                </div>
-            </aside>
+                <HistoryPanel
+                    history={history}
+                    closeHistory={() => setShowHistory(false)}
+                    updateActiveTab={updateActiveTab}
+                />
             )}
-            {pendingUpdateBatch && (
-                <div className="modal-backdrop" role="presentation">
-                    <div className="update-confirm-dialog" role="dialog" aria-modal="true" aria-label="Confirm update query">
-                        <div className="panel-title">
-                            <span>Run Update Queries?</span>
-                        </div>
-                        <p>
-                            Apply <strong>{pendingUpdateBatch.edits.length}</strong> pending edit{pendingUpdateBatch.edits.length === 1 ? '' : 's'}.
-                        </p>
-                        <div className="update-query-preview">
-                            <button
-                                type="button"
-                                className="copy-cell-button"
-                                onClick={() => copyText(pendingUpdateBatch.sql, 'Copied update query')}
-                                title="Copy update query"
-                                aria-label="Copy update query"
-                            >
-                                ⧉
-                            </button>
-                            <pre>{pendingUpdateBatch.sql}</pre>
-                        </div>
-                        <div className="button-row two">
-                            <button className="secondary" onClick={() => setPendingUpdateBatch(null)} disabled={isRunning}>Cancel</button>
-                            <button onClick={runPendingUpdateBatch} disabled={isRunning}>Run update queries</button>
-                        </div>
-                    </div>
-                </div>
-            )}
+            <UpdateConfirmDialog
+                pendingUpdateBatch={pendingUpdateBatch}
+                copyText={copyText}
+                setPendingUpdateBatch={setPendingUpdateBatch}
+                isRunning={isRunning}
+                runPendingUpdateBatch={runPendingUpdateBatch}
+            />
         </div>
     )
 }
