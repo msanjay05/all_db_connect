@@ -106,6 +106,14 @@ function App() {
     const canEditResults = Boolean(selectedProfile && !selectedProfile.readOnly && editableTableName);
     const resultEditItems = useMemo(() => Object.values(resultEdits), [resultEdits]);
     const resultEditCount = resultEditItems.length;
+    const resultPrimaryKeyNames = useMemo(
+        () => primaryKeyNamesForTable(schema, editableTableName),
+        [schema, editableTableName],
+    );
+    const sortedResultColumns = useMemo(
+        () => sortColumnsByName(activeResultColumns, resultPrimaryKeyNames),
+        [activeResultColumns, resultPrimaryKeyNames],
+    );
 
     const filteredRows = useMemo(() => {
         const columnsByName = new Map(activeResultColumns.map((column) => [column.name, column]));
@@ -148,10 +156,14 @@ function App() {
 
     const filteredSchemaTables = useMemo(() => {
         const search = tableFilter.trim().toLowerCase();
+        const tables = (schema.tables || []).map((table) => ({
+            ...table,
+            columns: sortColumnsByName(table.columns || []),
+        }));
         if (!search) {
-            return schema.tables || [];
+            return tables;
         }
-        return (schema.tables || []).filter((table) =>
+        return tables.filter((table) =>
             table.name.toLowerCase().includes(search)
             || (table.columns || []).some((column) => column.name.toLowerCase().includes(search)),
         );
@@ -518,17 +530,17 @@ function App() {
             setStatus(selectedProfile?.readOnly ? 'Read-only connections cannot edit result rows' : 'Run a simple SELECT from one table to edit results');
             return;
         }
-        if (String(column.name).toLowerCase() === 'id') {
-            setStatus('The row id column cannot be edited');
+        if (isPrimaryKeyColumn(column, resultPrimaryKeyNames)) {
+            setStatus('Primary key columns cannot be edited');
             return;
         }
-        const rowId = getRowIdValue(row);
-        if (rowId === null || rowId === undefined || rowId === '') {
-            setStatus('Cannot update this row because it has no id value');
+        const rowKey = getRowKey(row, resultPrimaryKeyNames);
+        if (!rowKey) {
+            setStatus('Cannot update this row because the primary key is not in the result');
             return;
         }
         const originalValue = formatValue(row[column.name]);
-        const editKey = makeResultEditKey(rowId, column.name);
+        const editKey = makeResultEditKey(rowKey.name, rowKey.value, column.name);
         if (String(nextValue) === originalValue) {
             setResultEdits((current) => {
                 const next = {...current};
@@ -539,7 +551,7 @@ function App() {
             });
             return;
         }
-        const updateSql = buildUpdateSql(editableTableName, column, nextValue, rowId);
+        const updateSql = buildUpdateSql(editableTableName, column, nextValue, rowKey);
         if (!updateSql) {
             setStatus('Could not build update query for this value');
             return;
@@ -552,7 +564,7 @@ function App() {
                     sql: updateSql,
                     tableName: editableTableName,
                     columnName: column.name,
-                    rowId,
+                    rowKey,
                     originalValue,
                     nextValue: String(nextValue),
                 },
@@ -561,7 +573,7 @@ function App() {
             setStatus(`${nextCount} pending edit${nextCount === 1 ? '' : 's'}`);
             return next;
         });
-    }, [canEditResults, editableTableName, selectedProfile]);
+    }, [canEditResults, editableTableName, resultPrimaryKeyNames, selectedProfile]);
 
     function cancelResultEdits() {
         setResultEdits({});
@@ -1018,7 +1030,7 @@ function App() {
                     </div>
                     {activeTab?.result?.error && <div className="error-box">{activeTab.result.error}</div>}
                     <ResultGrid
-                        columns={activeTab?.result?.columns || []}
+                        columns={sortedResultColumns}
                         rows={paginatedRows}
                         rowOffset={resultPageStart}
                         showFilters={activeTab?.showFilters}
@@ -1030,6 +1042,7 @@ function App() {
                         onSort={toggleResultSort}
                         canEdit={canEditResults}
                         edits={resultEdits}
+                        primaryKeyNames={resultPrimaryKeyNames}
                         onCellUpdate={requestCellUpdate}
                     />
                     {activeTab?.result?.columns?.length > 0 && (
@@ -1104,7 +1117,18 @@ function App() {
                         <p>
                             Apply <strong>{pendingUpdateBatch.edits.length}</strong> pending edit{pendingUpdateBatch.edits.length === 1 ? '' : 's'}.
                         </p>
-                        <pre>{pendingUpdateBatch.sql}</pre>
+                        <div className="update-query-preview">
+                            <button
+                                type="button"
+                                className="copy-cell-button"
+                                onClick={() => copyText(pendingUpdateBatch.sql, 'Copied update query')}
+                                title="Copy update query"
+                                aria-label="Copy update query"
+                            >
+                                ⧉
+                            </button>
+                            <pre>{pendingUpdateBatch.sql}</pre>
+                        </div>
                         <div className="button-row two">
                             <button className="secondary" onClick={() => setPendingUpdateBatch(null)} disabled={isRunning}>Cancel</button>
                             <button onClick={runPendingUpdateBatch} disabled={isRunning}>Run update queries</button>
@@ -1116,7 +1140,7 @@ function App() {
     )
 }
 
-const ResultGrid = memo(function ResultGrid({columns, rows, rowOffset = 0, showFilters, columnFilters, onFilterChange, onFilterClear, onCopyText, sort, onSort, canEdit, edits, onCellUpdate}) {
+const ResultGrid = memo(function ResultGrid({columns, rows, rowOffset = 0, showFilters, columnFilters, onFilterChange, onFilterClear, onCopyText, sort, onSort, canEdit, edits, primaryKeyNames, onCellUpdate}) {
     const handleCellCopy = useCallback((event) => {
         const target = event.target.closest?.('.copy-cell-icon');
         if (!target) {
@@ -1212,7 +1236,9 @@ const ResultGrid = memo(function ResultGrid({columns, rows, rowOffset = 0, showF
                                                 value={dateFilterSelectValue(columnFilters[column.name])}
                                                 onChange={(event) => onFilterChange(
                                                     column.name,
-                                                    isDateCompareOperator(event.target.value) ? `datecmp:${event.target.value}:` : event.target.value,
+                                                    isDateCompareOperator(event.target.value)
+                                                        ? buildDateOperatorFilterValue(columnFilters[column.name], event.target.value)
+                                                        : event.target.value,
                                                 )}
                                                 title={`Filter ${column.name}`}
                                             >
@@ -1223,25 +1249,98 @@ const ResultGrid = memo(function ResultGrid({columns, rows, rowOffset = 0, showF
                                                 <option value="date:last3">Last 3 days</option>
                                                 <option value="date:last7">Last 7 days</option>
                                                 <option value="date:last30">Last 30 days</option>
-                                                <option value="eq">= custom date</option>
-                                                <option value="neq">!= custom date</option>
-                                                <option value="gt">&gt; custom date</option>
-                                                <option value="gte">&gt;= custom date</option>
-                                                <option value="lt">&lt; custom date</option>
-                                                <option value="lte">&lt;= custom date</option>
+                                                <option value="eq">=</option>
+                                                <option value="neq">!=</option>
+                                                <option value="gt">&gt;</option>
+                                                <option value="gte">&gt;=</option>
+                                                <option value="lt">&lt;</option>
+                                                <option value="lte">&lt;=</option>
+                                                <option value="between">Between</option>
                                             </select>
                                             <input
                                                 type="date"
-                                                value={customDateValue(columnFilters[column.name])}
+                                                value={customDatePart(columnFilters[column.name], 'start')}
                                                 disabled={!dateFilterNeedsCustomValue(columnFilters[column.name])}
+                                                onDoubleClick={(event) => {
+                                                    onFilterChange(
+                                                        column.name,
+                                                        buildDateTimeFilterValue(columnFilters[column.name], '', '', 'start'),
+                                                    );
+                                                    event.currentTarget.blur();
+                                                }}
+                                                onChange={(event) => {
+                                                    onFilterChange(
+                                                        column.name,
+                                                        buildDateTimeFilterValue(
+                                                            columnFilters[column.name],
+                                                            event.target.value,
+                                                            customTimePart(columnFilters[column.name], 'start'),
+                                                            'start',
+                                                        ),
+                                                    );
+                                                    event.currentTarget.blur();
+                                                }}
+                                                title={`Date for ${column.name}`}
+                                            />
+                                            <input
+                                                type="time"
+                                                value={customTimePart(columnFilters[column.name], 'start')}
+                                                disabled={!dateFilterNeedsCustomValue(columnFilters[column.name]) || !customDatePart(columnFilters[column.name], 'start')}
                                                 onChange={(event) => onFilterChange(
                                                     column.name,
-                                                    event.target.value
-                                                        ? `datecmp:${dateCompareOperatorValue(columnFilters[column.name]) || 'eq'}:${event.target.value}`
-                                                        : `datecmp:${dateCompareOperatorValue(columnFilters[column.name]) || 'eq'}:`,
+                                                    buildDateTimeFilterValue(
+                                                        columnFilters[column.name],
+                                                        customDatePart(columnFilters[column.name], 'start'),
+                                                        event.target.value,
+                                                        'start',
+                                                    ),
                                                 )}
-                                                title={`Custom date for ${column.name}`}
+                                                title={`Optional time for ${column.name}`}
                                             />
+                                            {dateCompareOperatorValue(columnFilters[column.name]) === 'between' && (
+                                                <>
+                                                <input
+                                                    type="date"
+                                                    value={customDatePart(columnFilters[column.name], 'end')}
+                                                    disabled={!dateFilterNeedsCustomValue(columnFilters[column.name])}
+                                                    onDoubleClick={(event) => {
+                                                        onFilterChange(
+                                                            column.name,
+                                                            buildDateTimeFilterValue(columnFilters[column.name], '', '', 'end'),
+                                                        );
+                                                        event.currentTarget.blur();
+                                                    }}
+                                                    onChange={(event) => {
+                                                        onFilterChange(
+                                                            column.name,
+                                                            buildDateTimeFilterValue(
+                                                                columnFilters[column.name],
+                                                                event.target.value,
+                                                                customTimePart(columnFilters[column.name], 'end'),
+                                                                'end',
+                                                            ),
+                                                        );
+                                                        event.currentTarget.blur();
+                                                    }}
+                                                    title={`End date for ${column.name}`}
+                                                />
+                                                <input
+                                                    type="time"
+                                                    value={customTimePart(columnFilters[column.name], 'end')}
+                                                    disabled={!customDatePart(columnFilters[column.name], 'end')}
+                                                    onChange={(event) => onFilterChange(
+                                                        column.name,
+                                                        buildDateTimeFilterValue(
+                                                            columnFilters[column.name],
+                                                            customDatePart(columnFilters[column.name], 'end'),
+                                                            event.target.value,
+                                                            'end',
+                                                        ),
+                                                    )}
+                                                    title={`Optional end time for ${column.name}`}
+                                                />
+                                                </>
+                                            )}
                                             </>
                                         ) : isNumericColumn(column) ? (
                                             <>
@@ -1304,10 +1403,11 @@ const ResultGrid = memo(function ResultGrid({columns, rows, rowOffset = 0, showF
                             {columns.map((column, columnIndex) => (
                                 <td key={column.name}>
                                     {(() => {
-                                        const editKey = makeResultEditKey(getRowIdValue(row), column.name);
+                                        const rowKey = getRowKey(row, primaryKeyNames);
+                                        const editKey = rowKey ? makeResultEditKey(rowKey.name, rowKey.value, column.name) : '';
                                         const edit = edits?.[editKey];
                                         const displayValue = edit ? edit.nextValue : formatValue(row[column.name]);
-                                        const editable = canEdit && String(column.name).toLowerCase() !== 'id' && hasRowId(row);
+                                        const editable = canEdit && rowKey && !isPrimaryKeyColumn(column, primaryKeyNames);
                                         return (
                                     <div className="result-cell-content">
                                         <span
@@ -1491,13 +1591,13 @@ function quoteIdentifierPath(identifier) {
         .join('.');
 }
 
-function buildUpdateSql(tableName, column, rawValue, rowId) {
+function buildUpdateSql(tableName, column, rawValue, rowKey) {
     const valueSql = formatEditedValueForSql(rawValue, column);
-    const idSql = formatIdValueForSql(rowId);
-    if (!tableName || !column?.name || valueSql === null || idSql === null) {
+    const keySql = formatIdValueForSql(rowKey?.value);
+    if (!tableName || !column?.name || !rowKey?.name || valueSql === null || keySql === null) {
         return '';
     }
-    return `UPDATE ${quoteIdentifierPath(tableName)} SET ${quoteIdentifier(column.name)} = ${valueSql} WHERE ${quoteIdentifier('id')} = ${idSql}`;
+    return `UPDATE ${quoteIdentifierPath(tableName)} SET ${quoteIdentifier(column.name)} = ${valueSql} WHERE ${quoteIdentifier(rowKey.name)} = ${keySql}`;
 }
 
 function formatEditedValueForSql(rawValue, column) {
@@ -1523,18 +1623,23 @@ function escapeSqlString(value) {
     return String(value).replace(/\\/g, '\\\\').replace(/'/g, "''");
 }
 
-function getRowIdValue(row) {
-    const key = Object.keys(row || {}).find((item) => item.toLowerCase() === 'id');
-    return key ? row[key] : undefined;
+function getRowKey(row, primaryKeyNames = new Set()) {
+    const keys = Object.keys(row || {});
+    const schemaKey = keys.find((item) => primaryKeyNames.has(item.toLowerCase()));
+    const fallbackKey = keys.find((item) => item.toLowerCase() === 'id');
+    const key = schemaKey || fallbackKey;
+    if (!key) {
+        return null;
+    }
+    const value = row[key];
+    if (value === null || value === undefined || value === '') {
+        return null;
+    }
+    return {name: key, value};
 }
 
-function hasRowId(row) {
-    const value = getRowIdValue(row);
-    return value !== null && value !== undefined && value !== '';
-}
-
-function makeResultEditKey(rowId, columnName) {
-    return `${String(rowId)}\u0000${String(columnName)}`;
+function makeResultEditKey(keyName, keyValue, columnName) {
+    return `${String(keyName)}\u0000${String(keyValue)}\u0000${String(columnName)}`;
 }
 
 function formatSql(sql) {
@@ -1680,6 +1785,41 @@ function filterInputClass(column) {
     return 'column-filter-input';
 }
 
+function sortColumnsByName(columns = [], primaryKeyNames = new Set()) {
+    return [...columns].sort((left, right) =>
+        Number(isPrimaryKeyColumn(right, primaryKeyNames)) - Number(isPrimaryKeyColumn(left, primaryKeyNames))
+        || String(left?.name || '').localeCompare(String(right?.name || ''), undefined, {
+            numeric: true,
+            sensitivity: 'base',
+        }),
+    );
+}
+
+function isPrimaryKeyColumn(column, primaryKeyNames = new Set()) {
+    const columnName = String(column?.name || '').toLowerCase();
+    return String(column?.key || '').toUpperCase() === 'PRI' || primaryKeyNames.has(columnName) || columnName === 'id';
+}
+
+function primaryKeyNamesForTable(schema, tableName) {
+    const normalizedTableName = lastIdentifierPart(tableName).toLowerCase();
+    if (!normalizedTableName) {
+        return new Set();
+    }
+    const table = (schema?.tables || []).find((item) =>
+        lastIdentifierPart(item.name).toLowerCase() === normalizedTableName,
+    );
+    return new Set(
+        (table?.columns || [])
+            .filter((column) => String(column.key || '').toUpperCase() === 'PRI')
+            .map((column) => String(column.name || '').toLowerCase()),
+    );
+}
+
+function lastIdentifierPart(identifier = '') {
+    const parts = String(identifier).split('.').map((part) => part.trim()).filter(Boolean);
+    return parts[parts.length - 1] || '';
+}
+
 function matchesDatePreset(value, preset) {
     const date = parseResultDate(value);
     if (!date) {
@@ -1716,18 +1856,37 @@ function matchesDatePreset(value, preset) {
 }
 
 function matchesDateComparison(value, filter) {
-    const [, operator, rawDate] = filter.split(':');
+    const [, operator, ...rawDateParts] = filter.split(':');
+    const rawDate = rawDateParts.join(':');
     if (!rawDate) {
         return true;
     }
     const actualDate = parseResultDate(value);
-    const expectedDate = parseResultDate(rawDate);
-    if (!actualDate || !expectedDate) {
+    if (!actualDate) {
         return false;
     }
 
-    const actual = startOfDay(actualDate).getTime();
-    const expected = startOfDay(expectedDate).getTime();
+    if (operator === 'between') {
+        const [rawStart, rawEnd] = rawDate.split('|');
+        const startDate = rawStart ? parseResultDate(rawStart) : null;
+        const endDate = rawEnd ? parseResultDate(rawEnd) : null;
+        if (!startDate && !endDate) {
+            return true;
+        }
+        const compareWithTime = hasTimeComponent(rawStart) || hasTimeComponent(rawEnd);
+        const actual = compareWithTime ? actualDate.getTime() : startOfDay(actualDate).getTime();
+        const start = startDate ? (compareWithTime ? startDate.getTime() : startOfDay(startDate).getTime()) : null;
+        const end = endDate ? (compareWithTime ? endDate.getTime() : startOfDay(endDate).getTime()) : null;
+        return (start === null || actual >= start) && (end === null || actual <= end);
+    }
+
+    const expectedDate = parseResultDate(rawDate);
+    if (!expectedDate) {
+        return false;
+    }
+
+    const actual = hasTimeComponent(rawDate) ? actualDate.getTime() : startOfDay(actualDate).getTime();
+    const expected = hasTimeComponent(rawDate) ? expectedDate.getTime() : startOfDay(expectedDate).getTime();
 
     switch (operator) {
         case 'eq':
@@ -1762,8 +1921,12 @@ function dateFilterNeedsCustomValue(value = '') {
     return value.startsWith('datecmp:');
 }
 
+function hasTimeComponent(value = '') {
+    return /[T ]\d{2}:\d{2}/.test(value);
+}
+
 function isDateCompareOperator(value = '') {
-    return ['eq', 'neq', 'gt', 'gte', 'lt', 'lte'].includes(value);
+    return ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'between'].includes(value);
 }
 
 function matchesNumericFilter(value, filter) {
@@ -1806,11 +1969,48 @@ function numericFilterValue(value = '') {
     return value.startsWith('num:') ? value.split(':').slice(2).join(':') : '';
 }
 
-function customDateValue(value = '') {
+function customDateValue(value = '', bound = 'start') {
     if (value.startsWith('datecmp:')) {
-        return value.split(':').slice(2).join(':');
+        const operator = dateCompareOperatorValue(value);
+        const rawValue = value.split(':').slice(2).join(':');
+        if (operator === 'between') {
+            const [startValue = '', endValue = ''] = rawValue.split('|');
+            return bound === 'end' ? endValue : startValue;
+        }
+        return rawValue;
     }
     return '';
+}
+
+function customDatePart(value = '', bound = 'start') {
+    return customDateValue(value, bound).split('T')[0] || '';
+}
+
+function customTimePart(value = '', bound = 'start') {
+    return customDateValue(value, bound).split('T')[1] || '';
+}
+
+function buildDateOperatorFilterValue(currentValue = '', nextOperator = '') {
+    if (!nextOperator) {
+        return '';
+    }
+    if (nextOperator === 'between') {
+        const startValue = customDateValue(currentValue, 'start');
+        const endValue = customDateValue(currentValue, 'end');
+        return `datecmp:between:${startValue}|${endValue}`;
+    }
+    return `datecmp:${nextOperator}:${customDateValue(currentValue, 'start')}`;
+}
+
+function buildDateTimeFilterValue(currentValue = '', date = '', time = '', bound = 'start') {
+    const operator = dateCompareOperatorValue(currentValue) || 'eq';
+    const nextValue = date ? `${date}${time ? `T${time}` : ''}` : '';
+    if (operator === 'between') {
+        const startValue = bound === 'start' ? nextValue : customDateValue(currentValue, 'start');
+        const endValue = bound === 'end' ? nextValue : customDateValue(currentValue, 'end');
+        return `datecmp:${operator}:${startValue}|${endValue}`;
+    }
+    return `datecmp:${operator}:${nextValue}`;
 }
 
 function isSpecialFilter(value = '') {

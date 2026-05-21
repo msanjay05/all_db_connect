@@ -1017,6 +1017,7 @@ label {
     position: sticky;
     top: 34px;
     z-index: 2;
+    max-width: none;
     background: #121821;
     padding: 6px;
 }
@@ -1032,12 +1033,25 @@ label {
     grid-template-columns: minmax(96px, 1fr) minmax(86px, 1fr) 24px;
 }
 
+.column-filter-input.date-filter {
+    grid-template-columns: minmax(88px, 0.8fr) minmax(118px, 1fr) minmax(78px, 0.7fr) minmax(118px, 1fr) minmax(78px, 0.7fr) 24px;
+    min-width: 540px;
+}
+
 .column-filter-input input,
 .column-filter-input select {
     height: 26px;
     min-width: 90px;
     padding: 4px 7px;
     font-size: 12px;
+}
+
+.column-filter-input.date-filter input[type="date"] {
+    min-width: 118px;
+}
+
+.column-filter-input.date-filter input[type="time"] {
+    min-width: 78px;
 }
 
 .column-filter-input button {
@@ -1124,6 +1138,18 @@ label {
     margin: 0 0 10px;
 }
 
+.update-query-preview {
+    position: relative;
+    margin: 0 0 12px;
+}
+
+.update-query-preview .copy-cell-button {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    opacity: 1;
+}
+
 .update-confirm-dialog pre {
     overflow: auto;
     max-height: 180px;
@@ -1132,8 +1158,8 @@ label {
     background: #0d1117;
     color: #dbeafe;
     font-size: 12px;
-    margin: 0 0 12px;
-    padding: 10px;
+    margin: 0;
+    padding: 10px 40px 10px 10px;
     white-space: pre-wrap;
 }
 
