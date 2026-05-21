@@ -158,6 +158,14 @@ func (a *App) ExecuteQuery(request models.QueryRequest) (models.QueryResult, err
 	if err != nil {
 		return models.QueryResult{}, err
 	}
+	if profile.ReadOnly && !isDQLOnly(request.SQL) {
+		return models.QueryResult{
+			Rows:    []map[string]interface{}{},
+			Columns: []models.QueryColumn{},
+			Success: false,
+			Error:   "Read-only connection only allows DQL queries such as SELECT, SHOW, DESCRIBE, and EXPLAIN",
+		}, nil
+	}
 
 	selectedDatabase := strings.TrimSpace(request.Database)
 	if selectedDatabase == "" {
@@ -359,6 +367,7 @@ func (a *App) profileAndPassword(input models.ConnectionProfileInput) (models.Co
 		Port:     normalized.Port,
 		Username: normalized.Username,
 		Database: normalized.Database,
+		ReadOnly: normalized.ReadOnly,
 	}, normalized.Password, nil
 }
 
@@ -388,6 +397,144 @@ func normalizeProfileInput(input models.ConnectionProfileInput) (models.Connecti
 		return models.ConnectionProfileInput{}, fmt.Errorf("username is required")
 	}
 	return input, nil
+}
+
+func isDQLOnly(sqlText string) bool {
+	statements := splitSQLStatements(sqlText)
+	if len(statements) == 0 {
+		return false
+	}
+	for _, statement := range statements {
+		if !isDQLStatement(statement) {
+			return false
+		}
+	}
+	return true
+}
+
+func isDQLStatement(statement string) bool {
+	keyword := strings.ToUpper(firstSQLKeyword(statement))
+	switch keyword {
+	case "SELECT", "WITH", "SHOW", "DESCRIBE", "DESC", "EXPLAIN":
+		return true
+	default:
+		return false
+	}
+}
+
+func firstSQLKeyword(statement string) string {
+	statement = strings.TrimSpace(statement)
+	for {
+		switch {
+		case strings.HasPrefix(statement, "--"):
+			if idx := strings.IndexByte(statement, '\n'); idx >= 0 {
+				statement = strings.TrimSpace(statement[idx+1:])
+				continue
+			}
+			return ""
+		case strings.HasPrefix(statement, "#"):
+			if idx := strings.IndexByte(statement, '\n'); idx >= 0 {
+				statement = strings.TrimSpace(statement[idx+1:])
+				continue
+			}
+			return ""
+		case strings.HasPrefix(statement, "/*"):
+			if idx := strings.Index(statement, "*/"); idx >= 0 {
+				statement = strings.TrimSpace(statement[idx+2:])
+				continue
+			}
+			return ""
+		case strings.HasPrefix(statement, "("):
+			statement = strings.TrimSpace(statement[1:])
+			continue
+		}
+		break
+	}
+	for index, char := range statement {
+		if !(char == '_' || char >= 'A' && char <= 'Z' || char >= 'a' && char <= 'z') {
+			return statement[:index]
+		}
+	}
+	return statement
+}
+
+func splitSQLStatements(sqlText string) []string {
+	var statements []string
+	var current strings.Builder
+	var quote rune
+	escaped := false
+	inLineComment := false
+	inBlockComment := false
+
+	for index, char := range sqlText {
+		next := rune(0)
+		if index+1 < len(sqlText) {
+			next = rune(sqlText[index+1])
+		}
+
+		if inLineComment {
+			current.WriteRune(char)
+			if char == '\n' {
+				inLineComment = false
+			}
+			continue
+		}
+		if inBlockComment {
+			current.WriteRune(char)
+			if char == '*' && next == '/' {
+				inBlockComment = false
+			}
+			continue
+		}
+		if quote != 0 {
+			current.WriteRune(char)
+			if escaped {
+				escaped = false
+				continue
+			}
+			if char == '\\' {
+				escaped = true
+				continue
+			}
+			if char == quote {
+				quote = 0
+			}
+			continue
+		}
+
+		if char == '-' && next == '-' {
+			inLineComment = true
+			current.WriteRune(char)
+			continue
+		}
+		if char == '#' {
+			inLineComment = true
+			current.WriteRune(char)
+			continue
+		}
+		if char == '/' && next == '*' {
+			inBlockComment = true
+			current.WriteRune(char)
+			continue
+		}
+		if char == '\'' || char == '"' || char == '`' {
+			quote = char
+			current.WriteRune(char)
+			continue
+		}
+		if char == ';' {
+			if statement := strings.TrimSpace(current.String()); statement != "" {
+				statements = append(statements, statement)
+			}
+			current.Reset()
+			continue
+		}
+		current.WriteRune(char)
+	}
+	if statement := strings.TrimSpace(current.String()); statement != "" {
+		statements = append(statements, statement)
+	}
+	return statements
 }
 
 func sanitizeExportFilename(name string, fallback string) string {

@@ -23,6 +23,7 @@ const defaultProfile = {
     port: 3306,
     username: 'root',
     password: '',
+    readOnly: false,
 };
 
 const mysqlKeywords = [
@@ -66,6 +67,8 @@ function App() {
     const [tableFilter, setTableFilter] = useState('');
     const [status, setStatus] = useState('Ready');
     const [isRunning, setIsRunning] = useState(false);
+    const [resultEdits, setResultEdits] = useState({});
+    const [pendingUpdateBatch, setPendingUpdateBatch] = useState(null);
     const schemaRef = useRef(schema);
     const editorRef = useRef(null);
     const runQueryRef = useRef(() => {});
@@ -99,6 +102,10 @@ function App() {
     const activeSort = activeTab?.sort || {column: '', direction: ''};
     const activeResultPageSize = activeTab?.resultPageSize || DEFAULT_RESULT_PAGE_SIZE;
     const activeResultPage = activeTab?.resultPage || 1;
+    const editableTableName = useMemo(() => inferEditableTableName(activeTab?.sql || ''), [activeTab?.sql]);
+    const canEditResults = Boolean(selectedProfile && !selectedProfile.readOnly && editableTableName);
+    const resultEditItems = useMemo(() => Object.values(resultEdits), [resultEdits]);
+    const resultEditCount = resultEditItems.length;
 
     const filteredRows = useMemo(() => {
         const columnsByName = new Map(activeResultColumns.map((column) => [column.name, column]));
@@ -160,6 +167,11 @@ function App() {
         selectedConnectionIdRef.current = selectedConnectionId;
         selectedDatabaseRef.current = selectedDatabase;
     }, [activeTabId, queryTabs, selectedConnectionId, selectedDatabase]);
+
+    useEffect(() => {
+        setResultEdits({});
+        setPendingUpdateBatch(null);
+    }, [activeTabId, selectedConnectionId, selectedDatabase]);
 
     const updateQueryTab = useCallback((tabId, updater) => {
         setQueryTabs((currentTabs) => currentTabs.map((tab) => {
@@ -319,6 +331,7 @@ function App() {
             username: profile.username,
             password: '',
             database: profile.database || '',
+            readOnly: Boolean(profile.readOnly),
         });
         setConnectionTestStatus('');
         setStatus(`Editing ${profile.name}. Leave password blank to keep the saved password.`);
@@ -475,6 +488,8 @@ function App() {
         }
         setIsRunning(true);
         updateQueryTab(tabId, {sql: fullSql, result: null, resultPage: 1});
+        setResultEdits({});
+        setPendingUpdateBatch(null);
         setStatus(mode === 'explain' ? 'Explaining query...' : 'Running query...');
         try {
             const result = await ExecuteQuery({connectionId: connectionID, database, sql, limit: tab.limit || 100});
@@ -495,6 +510,106 @@ function App() {
             setStatus(killed ? 'Stop requested for the running query' : 'No query is currently running');
         } catch (error) {
             setStatus(errorMessage(error));
+        }
+    }
+
+    const requestCellUpdate = useCallback((row, column, nextValue) => {
+        if (!canEditResults) {
+            setStatus(selectedProfile?.readOnly ? 'Read-only connections cannot edit result rows' : 'Run a simple SELECT from one table to edit results');
+            return;
+        }
+        if (String(column.name).toLowerCase() === 'id') {
+            setStatus('The row id column cannot be edited');
+            return;
+        }
+        const rowId = getRowIdValue(row);
+        if (rowId === null || rowId === undefined || rowId === '') {
+            setStatus('Cannot update this row because it has no id value');
+            return;
+        }
+        const originalValue = formatValue(row[column.name]);
+        const editKey = makeResultEditKey(rowId, column.name);
+        if (String(nextValue) === originalValue) {
+            setResultEdits((current) => {
+                const next = {...current};
+                delete next[editKey];
+                const nextCount = Object.keys(next).length;
+                setStatus(nextCount ? `${nextCount} pending edit${nextCount === 1 ? '' : 's'}` : 'No pending edits');
+                return next;
+            });
+            return;
+        }
+        const updateSql = buildUpdateSql(editableTableName, column, nextValue, rowId);
+        if (!updateSql) {
+            setStatus('Could not build update query for this value');
+            return;
+        }
+        setResultEdits((current) => {
+            const next = {
+                ...current,
+                [editKey]: {
+                    key: editKey,
+                    sql: updateSql,
+                    tableName: editableTableName,
+                    columnName: column.name,
+                    rowId,
+                    originalValue,
+                    nextValue: String(nextValue),
+                },
+            };
+            const nextCount = Object.keys(next).length;
+            setStatus(`${nextCount} pending edit${nextCount === 1 ? '' : 's'}`);
+            return next;
+        });
+    }, [canEditResults, editableTableName, selectedProfile]);
+
+    function cancelResultEdits() {
+        setResultEdits({});
+        setPendingUpdateBatch(null);
+        setStatus('Pending result edits cancelled');
+    }
+
+    function showResultUpdateConfirmation() {
+        if (resultEditItems.length === 0) {
+            return;
+        }
+        setPendingUpdateBatch({
+            edits: resultEditItems,
+            sql: resultEditItems.map((edit) => edit.sql).join(';\n') + ';',
+        });
+    }
+
+    async function runPendingUpdateBatch() {
+        if (!pendingUpdateBatch || !selectedConnectionId || !selectedDatabase) {
+            setPendingUpdateBatch(null);
+            return;
+        }
+        setIsRunning(true);
+        setStatus(`Running ${pendingUpdateBatch.edits.length} update${pendingUpdateBatch.edits.length === 1 ? '' : 's'}...`);
+        try {
+            let updatedRows = 0;
+            for (const edit of pendingUpdateBatch.edits) {
+                const result = await ExecuteQuery({
+                    connectionId: selectedConnectionId,
+                    database: selectedDatabase,
+                    sql: edit.sql,
+                    limit: -1,
+                });
+                if (!result.success) {
+                    setStatus(result.error || `Update failed for ${edit.columnName}`);
+                    return;
+                }
+                updatedRows += result.rowsAffected || 0;
+            }
+            const editCount = pendingUpdateBatch.edits.length;
+            setPendingUpdateBatch(null);
+            setResultEdits({});
+            setStatus(`Applied ${editCount} edit${editCount === 1 ? '' : 's'} across ${updatedRows} row update${updatedRows === 1 ? '' : 's'}`);
+            await executeCurrentSql('run');
+        } catch (error) {
+            setStatus(errorMessage(error));
+        } finally {
+            setIsRunning(false);
         }
     }
 
@@ -674,6 +789,14 @@ function App() {
                         <label>Port<input type="number" value={profileForm.port} onChange={(event) => updateProfileField('port', event.target.value)}/></label>
                         <label>User<input value={profileForm.username} onChange={(event) => updateProfileField('username', event.target.value)}/></label>
                         <label>Password<input type="password" value={profileForm.password} onChange={(event) => updateProfileField('password', event.target.value)}/></label>
+                        <label className="checkbox-label">
+                            <input
+                                type="checkbox"
+                                checked={Boolean(profileForm.readOnly)}
+                                onChange={(event) => updateProfileField('readOnly', event.target.checked)}
+                            />
+                            Read only (DQL queries only)
+                        </label>
                         {profileForm.id && <div className="hint">Leave password blank to keep the saved password.</div>}
                         <div className="button-row two">
                             <button onClick={testConnection}>Test</button>
@@ -856,6 +979,17 @@ function App() {
                     <div className="results-header">
                         <strong>Results</strong>
                         <div className="result-filter-actions">
+                            {resultEditCount > 0 && (
+                                <div className="result-edit-actions">
+                                    <span>{resultEditCount} edit{resultEditCount === 1 ? '' : 's'}</span>
+                                    <button className="secondary" onClick={cancelResultEdits} disabled={isRunning}>
+                                        Cancel
+                                    </button>
+                                    <button onClick={showResultUpdateConfirmation} disabled={isRunning}>
+                                        Update
+                                    </button>
+                                </div>
+                            )}
                             <button
                                 className={activeTab?.showFilters ? 'filter-toggle active' : 'filter-toggle'}
                                 disabled={!activeTab?.result?.columns?.length}
@@ -894,6 +1028,9 @@ function App() {
                         onCopyText={copyText}
                         sort={activeSort}
                         onSort={toggleResultSort}
+                        canEdit={canEditResults}
+                        edits={resultEdits}
+                        onCellUpdate={requestCellUpdate}
                     />
                     {activeTab?.result?.columns?.length > 0 && (
                         <div className="pagination-bar">
@@ -958,11 +1095,28 @@ function App() {
                 </div>
             </aside>
             )}
+            {pendingUpdateBatch && (
+                <div className="modal-backdrop" role="presentation">
+                    <div className="update-confirm-dialog" role="dialog" aria-modal="true" aria-label="Confirm update query">
+                        <div className="panel-title">
+                            <span>Run Update Queries?</span>
+                        </div>
+                        <p>
+                            Apply <strong>{pendingUpdateBatch.edits.length}</strong> pending edit{pendingUpdateBatch.edits.length === 1 ? '' : 's'}.
+                        </p>
+                        <pre>{pendingUpdateBatch.sql}</pre>
+                        <div className="button-row two">
+                            <button className="secondary" onClick={() => setPendingUpdateBatch(null)} disabled={isRunning}>Cancel</button>
+                            <button onClick={runPendingUpdateBatch} disabled={isRunning}>Run update queries</button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     )
 }
 
-const ResultGrid = memo(function ResultGrid({columns, rows, rowOffset = 0, showFilters, columnFilters, onFilterChange, onFilterClear, onCopyText, sort, onSort}) {
+const ResultGrid = memo(function ResultGrid({columns, rows, rowOffset = 0, showFilters, columnFilters, onFilterChange, onFilterClear, onCopyText, sort, onSort, canEdit, edits, onCellUpdate}) {
     const handleCellCopy = useCallback((event) => {
         const target = event.target.closest?.('.copy-cell-icon');
         if (!target) {
@@ -976,6 +1130,36 @@ const ResultGrid = memo(function ResultGrid({columns, rows, rowOffset = 0, showF
         }
         onCopyText(copyValue(rows[rowIndex][column.name]), `Copied ${column.name} value`);
     }, [columns, rows, onCopyText]);
+
+    const handleCellEditKeyDown = useCallback((event) => {
+        if (!canEdit) {
+            return;
+        }
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            event.currentTarget.textContent = event.currentTarget.dataset.originalValue || '';
+            event.currentTarget.blur();
+            return;
+        }
+        if (event.key !== 'Enter') {
+            return;
+        }
+        event.preventDefault();
+        const rowIndex = Number(event.currentTarget.dataset.rowIndex);
+        const columnIndex = Number(event.currentTarget.dataset.columnIndex);
+        const row = rows[rowIndex];
+        const column = columns[columnIndex];
+        if (!row || !column) {
+            return;
+        }
+        const nextValue = event.currentTarget.textContent || '';
+        if (nextValue === (event.currentTarget.dataset.originalValue || '')) {
+            event.currentTarget.blur();
+            return;
+        }
+        event.currentTarget.blur();
+        onCellUpdate(row, column, nextValue);
+    }, [canEdit, columns, rows, onCellUpdate]);
 
     if (!columns.length) {
         return <div className="empty-state">Run a query to see results.</div>
@@ -1119,8 +1303,26 @@ const ResultGrid = memo(function ResultGrid({columns, rows, rowOffset = 0, showF
                             <td className="row-number-cell">{rowOffset + rowIndex + 1}</td>
                             {columns.map((column, columnIndex) => (
                                 <td key={column.name}>
+                                    {(() => {
+                                        const editKey = makeResultEditKey(getRowIdValue(row), column.name);
+                                        const edit = edits?.[editKey];
+                                        const displayValue = edit ? edit.nextValue : formatValue(row[column.name]);
+                                        const editable = canEdit && String(column.name).toLowerCase() !== 'id' && hasRowId(row);
+                                        return (
                                     <div className="result-cell-content">
-                                        <span title={formatValue(row[column.name])}>{formatValue(row[column.name])}</span>
+                                        <span
+                                            key={`${editKey}:${displayValue}`}
+                                            className={editable ? (edit ? 'result-cell-value editable edited' : 'result-cell-value editable') : 'result-cell-value'}
+                                            contentEditable={editable}
+                                            suppressContentEditableWarning
+                                            data-row-index={rowIndex}
+                                            data-column-index={columnIndex}
+                                            data-original-value={formatValue(row[column.name])}
+                                            title={editable ? 'Edit value and press Enter to stage this update' : formatValue(row[column.name])}
+                                            onKeyDown={handleCellEditKeyDown}
+                                        >
+                                            {displayValue}
+                                        </span>
                                         <span
                                             className="copy-cell-button copy-cell-icon"
                                             data-row-index={rowIndex}
@@ -1132,6 +1334,8 @@ const ResultGrid = memo(function ResultGrid({columns, rows, rowOffset = 0, showF
                                             ⧉
                                         </span>
                                     </div>
+                                        );
+                                    })()}
                                 </td>
                             ))}
                         </tr>
@@ -1242,6 +1446,95 @@ function buildExplainSql(sql) {
         return trimmed;
     }
     return `EXPLAIN ${trimmed}`;
+}
+
+function inferEditableTableName(sql) {
+    const statement = stripTrailingSemicolon(stripSqlComments(sql)).trim();
+    if (!/^select\b/i.test(statement) || /\bjoin\b/i.test(statement)) {
+        return '';
+    }
+    const match = statement.match(/\bfrom\s+((?:`[^`]+`|[A-Za-z0-9_$]+)(?:\s*\.\s*(?:`[^`]+`|[A-Za-z0-9_$]+))?)(?:\s+(?:as\s+)?(?:`[^`]+`|[A-Za-z0-9_$]+))?\s*(?:where\b|group\b|order\b|having\b|limit\b|$)/i);
+    if (!match) {
+        return '';
+    }
+    const fromMatch = statement.match(/\bfrom\b/i);
+    if (!fromMatch) {
+        return '';
+    }
+    const fromTail = statement.slice(fromMatch.index + fromMatch[0].length);
+    const beforeClause = fromTail.split(/\bwhere\b|\bgroup\b|\border\b|\bhaving\b|\blimit\b/i)[0];
+    if (beforeClause.includes(',')) {
+        return '';
+    }
+    return unquoteIdentifierPath(match[1]);
+}
+
+function stripSqlComments(sql) {
+    return String(sql || '')
+        .replace(/\/\*[\s\S]*?\*\//g, ' ')
+        .replace(/--[^\n\r]*/g, ' ')
+        .replace(/#[^\n\r]*/g, ' ');
+}
+
+function unquoteIdentifierPath(identifier) {
+    return String(identifier || '')
+        .split('.')
+        .map((part) => part.trim().replace(/^`|`$/g, '').replace(/``/g, '`'))
+        .filter(Boolean)
+        .join('.');
+}
+
+function quoteIdentifierPath(identifier) {
+    return String(identifier || '')
+        .split('.')
+        .map((part) => quoteIdentifier(part.trim().replace(/^`|`$/g, '')))
+        .join('.');
+}
+
+function buildUpdateSql(tableName, column, rawValue, rowId) {
+    const valueSql = formatEditedValueForSql(rawValue, column);
+    const idSql = formatIdValueForSql(rowId);
+    if (!tableName || !column?.name || valueSql === null || idSql === null) {
+        return '';
+    }
+    return `UPDATE ${quoteIdentifierPath(tableName)} SET ${quoteIdentifier(column.name)} = ${valueSql} WHERE ${quoteIdentifier('id')} = ${idSql}`;
+}
+
+function formatEditedValueForSql(rawValue, column) {
+    const text = String(rawValue ?? '').trim();
+    if (/^null$/i.test(text)) {
+        return 'NULL';
+    }
+    if (isNumericColumn(column)) {
+        return /^-?\d+(\.\d+)?$/.test(text) ? text : null;
+    }
+    return `'${escapeSqlString(String(rawValue ?? ''))}'`;
+}
+
+function formatIdValueForSql(value) {
+    if (value === null || value === undefined || value === '') {
+        return null;
+    }
+    const text = String(value);
+    return /^-?\d+(\.\d+)?$/.test(text) ? text : `'${escapeSqlString(text)}'`;
+}
+
+function escapeSqlString(value) {
+    return String(value).replace(/\\/g, '\\\\').replace(/'/g, "''");
+}
+
+function getRowIdValue(row) {
+    const key = Object.keys(row || {}).find((item) => item.toLowerCase() === 'id');
+    return key ? row[key] : undefined;
+}
+
+function hasRowId(row) {
+    const value = getRowIdValue(row);
+    return value !== null && value !== undefined && value !== '';
+}
+
+function makeResultEditKey(rowId, columnName) {
+    return `${String(rowId)}\u0000${String(columnName)}`;
 }
 
 function formatSql(sql) {

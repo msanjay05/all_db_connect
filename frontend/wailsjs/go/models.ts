@@ -31,6 +31,7 @@ export namespace models {
 	    port: number;
 	    username: string;
 	    database: string;
+	    readOnly: boolean;
 	    createdAt: string;
 	    updatedAt: string;
 	
@@ -46,6 +47,7 @@ export namespace models {
 	        this.port = source["port"];
 	        this.username = source["username"];
 	        this.database = source["database"];
+	        this.readOnly = source["readOnly"];
 	        this.createdAt = source["createdAt"];
 	        this.updatedAt = source["updatedAt"];
 	    }
@@ -58,6 +60,7 @@ export namespace models {
 	    username: string;
 	    password: string;
 	    database: string;
+	    readOnly: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new ConnectionProfileInput(source);
@@ -72,6 +75,7 @@ export namespace models {
 	        this.username = source["username"];
 	        this.password = source["password"];
 	        this.database = source["database"];
+	        this.readOnly = source["readOnly"];
 	    }
 	}
 	export class ConnectionTestResult {

@@ -7,6 +7,7 @@ type ConnectionProfile struct {
 	Port      int    `json:"port"`
 	Username  string `json:"username"`
 	Database  string `json:"database"`
+	ReadOnly  bool   `json:"readOnly"`
 	CreatedAt string `json:"createdAt"`
 	UpdatedAt string `json:"updatedAt"`
 }
@@ -19,6 +20,7 @@ type ConnectionProfileInput struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
 	Database string `json:"database"`
+	ReadOnly bool   `json:"readOnly"`
 }
 
 type ConnectionTestResult struct {

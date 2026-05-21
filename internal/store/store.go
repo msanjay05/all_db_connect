@@ -51,6 +51,7 @@ func (s *Store) migrate() error {
 			port INTEGER NOT NULL,
 			username TEXT NOT NULL,
 			database_name TEXT NOT NULL DEFAULT '',
+			read_only INTEGER NOT NULL DEFAULT 0,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
 		)`,
@@ -79,6 +80,39 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("migrate metadata database: %w", err)
 		}
 	}
+	if err := s.ensureColumn("connection_profiles", "read_only", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) ensureColumn(table string, column string, definition string) error {
+	rows, err := s.db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return fmt.Errorf("inspect %s columns: %w", table, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name string
+		var columnType string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			return fmt.Errorf("scan %s columns: %w", table, err)
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + column + ` ` + definition); err != nil {
+		return fmt.Errorf("add %s.%s column: %w", table, column, err)
+	}
 	return nil
 }
 
@@ -93,14 +127,15 @@ func (s *Store) UpsertProfile(input models.ConnectionProfileInput, now time.Time
 
 	updatedAt := now.UTC().Format(time.RFC3339)
 	_, err = s.db.Exec(
-		`INSERT INTO connection_profiles (id, name, host, port, username, database_name, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO connection_profiles (id, name, host, port, username, database_name, read_only, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
 			name = excluded.name,
 			host = excluded.host,
 			port = excluded.port,
 			username = excluded.username,
 			database_name = excluded.database_name,
+			read_only = excluded.read_only,
 			updated_at = excluded.updated_at`,
 		input.ID,
 		input.Name,
@@ -108,6 +143,7 @@ func (s *Store) UpsertProfile(input models.ConnectionProfileInput, now time.Time
 		input.Port,
 		input.Username,
 		input.Database,
+		boolToInt(input.ReadOnly),
 		createdAt,
 		updatedAt,
 	)
@@ -122,13 +158,14 @@ func (s *Store) UpsertProfile(input models.ConnectionProfileInput, now time.Time
 		Port:      input.Port,
 		Username:  input.Username,
 		Database:  input.Database,
+		ReadOnly:  input.ReadOnly,
 		CreatedAt: createdAt,
 		UpdatedAt: updatedAt,
 	}, nil
 }
 
 func (s *Store) ListProfiles() ([]models.ConnectionProfile, error) {
-	rows, err := s.db.Query(`SELECT id, name, host, port, username, database_name, created_at, updated_at FROM connection_profiles ORDER BY name`)
+	rows, err := s.db.Query(`SELECT id, name, host, port, username, database_name, read_only, created_at, updated_at FROM connection_profiles ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("list profiles: %w", err)
 	}
@@ -137,9 +174,11 @@ func (s *Store) ListProfiles() ([]models.ConnectionProfile, error) {
 	var profiles []models.ConnectionProfile
 	for rows.Next() {
 		var profile models.ConnectionProfile
-		if err := rows.Scan(&profile.ID, &profile.Name, &profile.Host, &profile.Port, &profile.Username, &profile.Database, &profile.CreatedAt, &profile.UpdatedAt); err != nil {
+		var readOnly int
+		if err := rows.Scan(&profile.ID, &profile.Name, &profile.Host, &profile.Port, &profile.Username, &profile.Database, &readOnly, &profile.CreatedAt, &profile.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan profile: %w", err)
 		}
+		profile.ReadOnly = readOnly == 1
 		profiles = append(profiles, profile)
 	}
 	return profiles, rows.Err()
@@ -147,13 +186,15 @@ func (s *Store) ListProfiles() ([]models.ConnectionProfile, error) {
 
 func (s *Store) GetProfile(id string) (models.ConnectionProfile, error) {
 	var profile models.ConnectionProfile
+	var readOnly int
 	err := s.db.QueryRow(
-		`SELECT id, name, host, port, username, database_name, created_at, updated_at FROM connection_profiles WHERE id = ?`,
+		`SELECT id, name, host, port, username, database_name, read_only, created_at, updated_at FROM connection_profiles WHERE id = ?`,
 		id,
-	).Scan(&profile.ID, &profile.Name, &profile.Host, &profile.Port, &profile.Username, &profile.Database, &profile.CreatedAt, &profile.UpdatedAt)
+	).Scan(&profile.ID, &profile.Name, &profile.Host, &profile.Port, &profile.Username, &profile.Database, &readOnly, &profile.CreatedAt, &profile.UpdatedAt)
 	if err != nil {
 		return models.ConnectionProfile{}, err
 	}
+	profile.ReadOnly = readOnly == 1
 	return profile, nil
 }
 
