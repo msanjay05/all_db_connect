@@ -79,6 +79,8 @@ function App() {
     const [status, setStatus] = useState('Ready');
     const [isRunning, setIsRunning] = useState(false);
     const [resultEdits, setResultEdits] = useState({});
+    const [resultEditError, setResultEditError] = useState('');
+    const [resultEditSuccess, setResultEditSuccess] = useState('');
     const [pendingUpdateBatch, setPendingUpdateBatch] = useState(null);
     const schemaRef = useRef(schema);
     const editorRef = useRef(null);
@@ -584,16 +586,22 @@ function App() {
 
     const requestCellUpdate = useCallback((row, column, nextValue) => {
         if (!canEditResults) {
-            setStatus(selectedProfile?.readOnly ? 'Read-only connections cannot edit result rows' : 'Run a simple SELECT from one table to edit results');
+            const message = selectedProfile?.readOnly ? 'Read-only connections cannot edit result rows' : 'Run a simple SELECT from one table to edit results';
+            setResultEditError(message);
+            setStatus(message);
             return;
         }
         if (isPrimaryKeyColumn(column, resultPrimaryKeyNames)) {
-            setStatus('Primary key columns cannot be edited');
+            const message = 'Primary key columns cannot be edited';
+            setResultEditError(message);
+            setStatus(message);
             return;
         }
         const rowKey = getRowKey(row, resultPrimaryKeyNames);
         if (!rowKey) {
-            setStatus('Cannot update this row because the primary key is not in the result');
+            const message = 'Cannot update this row because the primary key is not in the result';
+            setResultEditError(message);
+            setStatus(message);
             return;
         }
         const originalValue = formatValue(row[column.name]);
@@ -604,15 +612,27 @@ function App() {
                 delete next[editKey];
                 const nextCount = Object.keys(next).length;
                 setStatus(nextCount ? `${nextCount} pending edit${nextCount === 1 ? '' : 's'}` : 'No pending edits');
+                setResultEditError('');
+                setResultEditSuccess('');
                 return next;
             });
             return;
         }
-        const updateSql = buildUpdateSql(editableTableName, column, nextValue, rowKey);
-        if (!updateSql) {
-            setStatus('Could not build update query for this value');
+        const validationError = validateEditedValue(nextValue, column);
+        if (validationError) {
+            setResultEditError(validationError);
+            setStatus(validationError);
             return;
         }
+        const updateSql = buildUpdateSql(editableTableName, column, nextValue, rowKey);
+        if (!updateSql) {
+            const message = 'Could not build update query for this value';
+            setResultEditError(message);
+            setStatus(message);
+            return;
+        }
+        setResultEditError('');
+        setResultEditSuccess('');
         setResultEdits((current) => {
             const next = {
                 ...current,
@@ -634,6 +654,8 @@ function App() {
 
     function cancelResultEdits() {
         setResultEdits({});
+        setResultEditError('');
+        setResultEditSuccess('');
         setPendingUpdateBatch(null);
         setStatus('Pending result edits cancelled');
     }
@@ -654,6 +676,8 @@ function App() {
             return;
         }
         setIsRunning(true);
+        setResultEditError('');
+        setResultEditSuccess('');
         setStatus(`Running ${pendingUpdateBatch.edits.length} update${pendingUpdateBatch.edits.length === 1 ? '' : 's'}...`);
         try {
             let updatedRows = 0;
@@ -665,18 +689,26 @@ function App() {
                     limit: -1,
                 });
                 if (!result.success) {
-                    setStatus(result.error || `Update failed for ${edit.columnName}`);
+                    const message = result.error || `Update failed for ${edit.columnName}`;
+                    setPendingUpdateBatch(null);
+                    setResultEditError(message);
+                    setStatus(message);
                     return;
                 }
                 updatedRows += result.rowsAffected || 0;
             }
             const editCount = pendingUpdateBatch.edits.length;
+            const message = `Applied ${editCount} edit${editCount === 1 ? '' : 's'} across ${updatedRows} row update${updatedRows === 1 ? '' : 's'}`;
             setPendingUpdateBatch(null);
             setResultEdits({});
-            setStatus(`Applied ${editCount} edit${editCount === 1 ? '' : 's'} across ${updatedRows} row update${updatedRows === 1 ? '' : 's'}`);
             await executeCurrentSql('run');
+            setResultEditSuccess(message);
+            setStatus(message);
         } catch (error) {
-            setStatus(errorMessage(error));
+            const message = errorMessage(error);
+            setPendingUpdateBatch(null);
+            setResultEditError(message);
+            setStatus(message);
         } finally {
             setIsRunning(false);
         }
@@ -721,53 +753,30 @@ function App() {
     }
 
     async function exportCsv() {
-        const connectionID = selectedConnectionIdRef.current;
-        const database = selectedDatabaseRef.current;
-        const tabId = activeTabIdRef.current;
-        const tab = queryTabsRef.current.find((item) => item.id === tabId);
-        const fullSql = editorRef.current?.getValue?.() ?? tab?.sql ?? '';
-        const sql = getExecutableSql(editorRef.current, fullSql);
+        const tab = activeTab;
+        const columns = sortedResultColumns;
+        const rows = filteredRows;
 
-        if (!connectionID) {
-            setStatus('Select or save a connection first');
-            return;
-        }
-        if (!database) {
-            setStatus('Select a database first');
-            return;
-        }
         if (!tab) {
             return;
         }
-        if (!sql.trim()) {
-            setStatus('No SQL statement found to export');
+        if (!tab.result?.success || !columns.length) {
+            setStatus('No query results to export');
             return;
         }
 
         setIsRunning(true);
-        updateQueryTab(tabId, {sql: fullSql});
-        setStatus('Exporting full result set to CSV...');
+        setStatus('Exporting current results to CSV...');
         try {
-            const result = await ExecuteQuery({connectionId: connectionID, database, sql, limit: -1});
-            if (!result.success) {
-                setStatus(result.error || 'CSV export failed');
-                return;
-            }
-            if (!result.columns?.length) {
-                setStatus('Query did not return columns to export');
-                return;
-            }
-
             const path = await SaveCSVFile(
                 `${sanitizeFileName(tab.title || 'query-results')}.csv`,
-                resultToCsv(result.columns, result.rows || []),
+                resultToCsv(columns, rows),
             );
             if (!path) {
-                setStatus('CSV export cancelled');
+                setStatus('Export cancelled');
                 return;
             }
-            setStatus(`Exported ${result.rows?.length || 0} rows to ${path}`);
-            refreshHistory();
+            setStatus(`Exported ${rows.length} row${rows.length === 1 ? '' : 's'} to ${path}`);
         } catch (error) {
             setStatus(errorMessage(error));
         } finally {
@@ -798,8 +807,9 @@ function App() {
             runQueryRef.current();
         });
         monaco.languages.registerCompletionItemProvider('sql', {
-            provideCompletionItems: () => ({
-                suggestions: buildSuggestions(monaco, schemaRef.current),
+            triggerCharacters: ['.'],
+            provideCompletionItems: (model, position) => ({
+                suggestions: buildSuggestions(monaco, schemaRef.current, completionContext(model, position)),
             }),
         });
         editor.focus();
@@ -1084,16 +1094,22 @@ function App() {
                                 ⊗
                             </button>
                             <button
-                                className="filter-toggle"
-                                disabled={isRunning || !selectedConnectionId || !selectedDatabase}
+                                className="filter-toggle export-button"
+                                disabled={isRunning || !activeTab?.result?.success || !activeTab?.result?.columns?.length}
                                 onClick={exportCsv}
-                                title="Export full current query result to CSV"
+                                title="Export current loaded results to CSV"
                             >
-                                CSV
+                                <svg className="download-icon" viewBox="0 0 16 16" aria-hidden="true">
+                                    <path d="M8 2v7m0 0 3-3m-3 3L5 6" />
+                                    <path d="M3 11v2h10v-2" />
+                                </svg>
+                                Export
                             </button>
                         </div>
                     </div>
                     {activeTab?.result?.error && <div className="error-box">{activeTab.result.error}</div>}
+                    {resultEditError && <div className="error-box">{resultEditError}</div>}
+                    {resultEditSuccess && <div className="success-box">{resultEditSuccess}</div>}
                     <ResultGrid
                         columns={sortedResultColumns}
                         rows={paginatedRows}
@@ -1676,6 +1692,58 @@ function formatEditedValueForSql(rawValue, column) {
     return `'${escapeSqlString(String(rawValue ?? ''))}'`;
 }
 
+function validateEditedValue(rawValue, column) {
+    const text = String(rawValue ?? '').trim();
+    if (/^null$/i.test(text)) {
+        return '';
+    }
+    if (isNumericColumn(column) && !/^-?\d+(\.\d+)?$/.test(text)) {
+        return `${column.name} expects a numeric value`;
+    }
+    if (isDateColumn(column) && !isValidSqlDateValue(text, column)) {
+        return `${column.name} expects a valid ${dateColumnInputLabel(column)} value`;
+    }
+    return '';
+}
+
+function isValidSqlDateValue(value, column) {
+    const type = String(column?.type || column?.dataType || column?.columnType || '').toLowerCase();
+    if (type.includes('time') && !type.includes('date') && !type.includes('timestamp')) {
+        return /^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/.test(value);
+    }
+    if (type.includes('year')) {
+        return /^\d{4}$/.test(value);
+    }
+    if (type.includes('date') && !type.includes('time') && !type.includes('timestamp')) {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+            return false;
+        }
+        return isRealDateParts(value);
+    }
+    const match = value.match(/^(\d{4}-\d{2}-\d{2})(?:[ T]([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?)?$/);
+    return Boolean(match && isRealDateParts(match[1]));
+}
+
+function isRealDateParts(value) {
+    const [year, month, day] = value.split('-').map(Number);
+    const date = new Date(year, month - 1, day);
+    return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day;
+}
+
+function dateColumnInputLabel(column) {
+    const type = String(column?.type || column?.dataType || column?.columnType || '').toLowerCase();
+    if (type.includes('time') && !type.includes('date') && !type.includes('timestamp')) {
+        return 'time';
+    }
+    if (type.includes('year')) {
+        return 'year';
+    }
+    if (type.includes('date') && !type.includes('time') && !type.includes('timestamp')) {
+        return 'date';
+    }
+    return 'date/time';
+}
+
 function formatIdValueForSql(value) {
     if (value === null || value === undefined || value === '') {
         return null;
@@ -2118,7 +2186,24 @@ function addDays(date, days) {
     return next;
 }
 
-function buildSuggestions(monaco, schema) {
+function completionContext(model, position) {
+    const fullSql = model?.getValue?.() || '';
+    const offset = model?.getOffsetAt?.(position) ?? fullSql.length;
+    const beforeCursor = fullSql.slice(0, offset);
+    const aliasMatch = beforeCursor.match(/(?:^|[^\w`])(`?[\w$]+`?)\.\w*$/);
+    return {
+        fullSql,
+        beforeCursor,
+        aliasQualifier: aliasMatch ? unquoteIdentifierPath(aliasMatch[1]) : '',
+    };
+}
+
+function buildSuggestions(monaco, schema, context = {}) {
+    const scopedTable = resolveSuggestionTable(schema, context);
+    if (scopedTable) {
+        return buildColumnSuggestions(monaco, scopedTable);
+    }
+
     const suggestions = mysqlKeywords.map((keyword) => ({
         label: keyword,
         kind: monaco.languages.CompletionItemKind.Keyword,
@@ -2137,17 +2222,67 @@ function buildSuggestions(monaco, schema) {
             });
         }
 
-        for (const column of table.columns || []) {
-            suggestions.push({
-                label: column.name,
-                kind: monaco.languages.CompletionItemKind.Field,
-                insertText: column.name,
-                detail: `${table.name}.${column.name} ${column.dataType}`,
-            });
-        }
+        suggestions.push(...buildColumnSuggestions(monaco, table));
     }
 
     return suggestions;
+}
+
+function buildColumnSuggestions(monaco, table) {
+    return sortColumnsByName(table.columns || []).map((column) => ({
+        label: column.name,
+        kind: monaco.languages.CompletionItemKind.Field,
+        insertText: column.name,
+        detail: `${table.name}.${column.name} ${column.dataType}`,
+    }));
+}
+
+function resolveSuggestionTable(schema, context) {
+    const tableRefs = parseSqlTableReferences(context.fullSql || context.beforeCursor || '');
+    if (context.aliasQualifier) {
+        const aliasRef = tableRefs.find((ref) =>
+            ref.alias.toLowerCase() === context.aliasQualifier.toLowerCase()
+            || lastIdentifierPart(ref.name).toLowerCase() === context.aliasQualifier.toLowerCase(),
+        );
+        return aliasRef ? findSchemaTable(schema, aliasRef.name) : null;
+    }
+    const singleTable = tableRefs.length === 1 ? tableRefs[0] : null;
+    return singleTable && isSelectColumnContext(context.beforeCursor) ? findSchemaTable(schema, singleTable.name) : null;
+}
+
+function parseSqlTableReferences(sql) {
+    const refs = [];
+    const cleaned = stripSqlComments(sql || '');
+    const tablePattern = /\b(from|join)\s+((?:`[^`]+`|[A-Za-z0-9_$]+)(?:\s*\.\s*(?:`[^`]+`|[A-Za-z0-9_$]+))?)(?:\s+(?:as\s+)?(`[^`]+`|[A-Za-z0-9_$]+))?/gi;
+    let match;
+    while ((match = tablePattern.exec(cleaned)) !== null) {
+        const rawName = unquoteIdentifierPath(match[2]);
+        const rawAlias = match[3] ? unquoteIdentifierPath(match[3]) : lastIdentifierPart(rawName);
+        if (rawAlias && !isSqlClauseKeyword(rawAlias)) {
+            refs.push({name: rawName, alias: rawAlias});
+        } else {
+            refs.push({name: rawName, alias: lastIdentifierPart(rawName)});
+        }
+    }
+    const fromSection = cleaned.split(/\bwhere\b|\bgroup\b|\border\b|\bhaving\b|\blimit\b/i)[0] || '';
+    return fromSection.includes(',') ? [] : refs;
+}
+
+function findSchemaTable(schema, tableName) {
+    const normalizedName = lastIdentifierPart(tableName).toLowerCase();
+    return (schema?.tables || []).find((table) => table.name.toLowerCase() === normalizedName) || null;
+}
+
+function isSelectColumnContext(beforeCursor = '') {
+    const current = stripSqlComments(beforeCursor).split(';').pop() || '';
+    const hasSelect = /\bselect\b/i.test(current);
+    const lastFrom = current.search(/\bfrom\b/i);
+    const lastSelect = current.search(/\bselect\b/i);
+    return hasSelect && (lastFrom === -1 || lastSelect < lastFrom);
+}
+
+function isSqlClauseKeyword(value = '') {
+    return ['where', 'join', 'left', 'right', 'inner', 'outer', 'group', 'order', 'having', 'limit', 'on'].includes(String(value).toLowerCase());
 }
 
 function formatValue(value) {

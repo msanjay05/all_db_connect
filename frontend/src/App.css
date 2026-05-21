@@ -824,6 +824,22 @@ label {
     color: #34d399;
 }
 
+.export-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.download-icon {
+    width: 14px;
+    height: 14px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.7;
+}
+
 .result-filter-actions {
     display: flex;
     align-items: center;
@@ -1109,7 +1125,8 @@ label {
 }
 
 .empty-state,
-.error-box {
+.error-box,
+.success-box {
     border: 1px solid #243244;
     border-radius: 10px;
     color: #8fa3bd;
@@ -1122,6 +1139,14 @@ label {
     border-color: #7a2e3b;
     background: #2b151d;
     color: #ffb4c0;
+    text-align: left;
+}
+
+.success-box {
+    margin-bottom: 10px;
+    border-color: #1f7a46;
+    background: #10291d;
+    color: #86efac;
     text-align: left;
 }
 
