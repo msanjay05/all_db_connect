@@ -64,19 +64,24 @@ const defaultProfile = {
     password: '',
     readOnly: false,
 };
+const EDITOR_WORKSPACE_STORAGE_KEY = 'all-db-connector.editor-workspaces.v1';
+const persistedEditorState = loadPersistedEditorState();
+const initialEditorWorkspace = persistedEditorState.activeConnectionId
+    ? normalizeWorkspace(persistedEditorState.workspaces[persistedEditorState.activeConnectionId])
+    : normalizeWorkspace();
 
 function App() {
     const [profiles, setProfiles] = useState([]);
-    const [selectedConnectionId, setSelectedConnectionId] = useState('');
+    const [selectedConnectionId, setSelectedConnectionId] = useState(persistedEditorState.activeConnectionId);
     const [profileForm, setProfileForm] = useState(defaultProfile);
     const [showConnectionForm, setShowConnectionForm] = useState(false);
     const [connectionTestStatus, setConnectionTestStatus] = useState('');
     const [databases, setDatabases] = useState([]);
     const [selectedDatabase, setSelectedDatabase] = useState('');
     const [schema, setSchema] = useState({database: '', tables: []});
-    const [queryTabs, setQueryTabs] = useState(() => [createQueryTab(1)]);
-    const [activeTabId, setActiveTabId] = useState(1);
-    const [connectionWorkspaces, setConnectionWorkspaces] = useState({});
+    const [queryTabs, setQueryTabs] = useState(() => initialEditorWorkspace.queryTabs);
+    const [activeTabId, setActiveTabId] = useState(initialEditorWorkspace.activeTabId);
+    const [connectionWorkspaces, setConnectionWorkspaces] = useState(persistedEditorState.workspaces);
     const [history, setHistory] = useState([]);
     const [showHistory, setShowHistory] = useState(false);
     const [tableFilter, setTableFilter] = useState('');
@@ -94,6 +99,7 @@ function App() {
     const selectedConnectionIdRef = useRef(selectedConnectionId);
     const selectedDatabaseRef = useRef(selectedDatabase);
     const connectionWorkspacesRef = useRef(connectionWorkspaces);
+    const restoredInitialConnectionRef = useRef(false);
 
     useEffect(() => {
         schemaRef.current = schema;
@@ -216,6 +222,31 @@ function App() {
     useEffect(() => {
         connectionWorkspacesRef.current = connectionWorkspaces;
     }, [connectionWorkspaces]);
+
+    useEffect(() => {
+        persistEditorState(selectedConnectionId, connectionWorkspaces);
+    }, [selectedConnectionId, connectionWorkspaces]);
+
+    useEffect(() => {
+        function persistBeforeUnload() {
+            const currentConnectionId = selectedConnectionIdRef.current;
+            if (!currentConnectionId) {
+                persistEditorState('', connectionWorkspacesRef.current);
+                return;
+            }
+            const nextWorkspaces = {
+                ...connectionWorkspacesRef.current,
+                [currentConnectionId]: currentWorkspaceSnapshot(),
+            };
+            persistEditorState(currentConnectionId, nextWorkspaces);
+        }
+
+        window.addEventListener('beforeunload', persistBeforeUnload);
+        return () => {
+            persistBeforeUnload();
+            window.removeEventListener('beforeunload', persistBeforeUnload);
+        };
+    }, []);
 
     useEffect(() => {
         setResultEdits({});
@@ -398,6 +429,18 @@ function App() {
         try {
             const items = await ListConnectionProfiles();
             setProfiles(items || []);
+            const activeConnectionId = selectedConnectionIdRef.current;
+            if (!restoredInitialConnectionRef.current && activeConnectionId) {
+                restoredInitialConnectionRef.current = true;
+                const activeProfile = (items || []).find((profile) => profile.id === activeConnectionId);
+                if (activeProfile) {
+                    loadDatabases(activeConnectionId, activeProfile.database);
+                } else {
+                    setSelectedConnectionId('');
+                    resetConnectionData();
+                    applyWorkspace({queryTabs: [createQueryTab(1)], activeTabId: 1});
+                }
+            }
         } catch (error) {
             setStatus(errorMessage(error));
         }
@@ -1019,5 +1062,75 @@ function App() {
     )
 }
 
+
+function loadPersistedEditorState() {
+    if (typeof window === 'undefined') {
+        return {activeConnectionId: '', workspaces: {}};
+    }
+    try {
+        const rawValue = window.localStorage.getItem(EDITOR_WORKSPACE_STORAGE_KEY);
+        if (!rawValue) {
+            return {activeConnectionId: '', workspaces: {}};
+        }
+        const parsed = JSON.parse(rawValue);
+        return {
+            activeConnectionId: String(parsed?.activeConnectionId || ''),
+            workspaces: normalizePersistedWorkspaces(parsed?.workspaces),
+        };
+    } catch {
+        return {activeConnectionId: '', workspaces: {}};
+    }
+}
+
+function persistEditorState(activeConnectionId, workspaces) {
+    if (typeof window === 'undefined') {
+        return;
+    }
+    try {
+        window.localStorage.setItem(EDITOR_WORKSPACE_STORAGE_KEY, JSON.stringify({
+            activeConnectionId: activeConnectionId || '',
+            workspaces: normalizePersistedWorkspaces(workspaces),
+        }));
+    } catch {
+        // Storage can fail in private mode or if quota is exceeded; the app should keep working in memory.
+    }
+}
+
+function normalizePersistedWorkspaces(workspaces) {
+    if (!workspaces || typeof workspaces !== 'object') {
+        return {};
+    }
+    return Object.entries(workspaces).reduce((next, [connectionId, workspace]) => {
+        if (!connectionId) {
+            return next;
+        }
+        next[connectionId] = sanitizeWorkspaceForPersistence(workspace);
+        return next;
+    }, {});
+}
+
+function sanitizeWorkspaceForPersistence(workspace) {
+    const normalized = normalizeWorkspace(workspace);
+    return {
+        activeTabId: normalized.activeTabId,
+        queryTabs: normalized.queryTabs.map(sanitizeTabForPersistence),
+    };
+}
+
+function sanitizeTabForPersistence(tab) {
+    return {
+        ...createQueryTab(tab.id),
+        id: tab.id,
+        title: tab.title,
+        sql: tab.sql || '',
+        limit: tab.limit || 100,
+        showFilters: Boolean(tab.showFilters),
+        columnFilters: tab.columnFilters || {},
+        sort: tab.sort || {column: '', direction: ''},
+        result: null,
+        resultPage: tab.resultPage || 1,
+        resultPageSize: tab.resultPageSize || DEFAULT_RESULT_PAGE_SIZE,
+    };
+}
 
 export default App
