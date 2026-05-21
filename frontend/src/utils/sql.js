@@ -175,7 +175,7 @@ export function buildSuggestions(monaco, schema, context = {}) {
             suggestions.push({
                 label: table.name,
                 kind: monaco.languages.CompletionItemKind.Struct,
-                insertText: table.name,
+                insertText: `${quoteIdentifier(table.name)} ${buildAlias(table.name)}`,
             });
         }
 

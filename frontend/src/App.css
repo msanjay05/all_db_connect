@@ -295,7 +295,7 @@ label {
 
 .active-connection-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 36px 36px;
+    grid-template-columns: minmax(0, 1fr) 34px 34px 34px;
     align-items: start;
     gap: 6px;
 }
@@ -306,15 +306,101 @@ label {
     min-width: 0;
 }
 
-.active-connection-select select {
-    height: 42px;
+.compact-select {
+    position: relative;
+    width: 100%;
+    min-width: 0;
+}
+
+.compact-select-button {
+    position: relative;
+    width: 100%;
+    min-width: 0;
+    justify-content: space-between;
+    border-color: #282832;
+    background: #111116;
+    color: #d6d6dc;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.2;
+    text-align: left;
+    padding-right: 28px;
+}
+
+.compact-select-button span:first-child {
+    display: block;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.compact-select-caret {
+    position: absolute;
+    top: 50%;
+    right: 9px;
+    transform: translateY(-50%);
+    color: #8b8b98;
+    font-size: 12px;
+    line-height: 1;
+}
+
+.compact-select-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    left: 0;
+    z-index: 20;
+    max-height: 112px;
+    overflow-y: auto;
+    border: 1px solid #30303a;
+    border-radius: 8px;
+    background: #151519;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+    padding: 3px;
+}
+
+.compact-select-option {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    min-height: 24px;
+    justify-content: flex-start;
+    border-color: transparent;
+    border-radius: 5px;
+    background: transparent;
+    color: #d6d6dc;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 1.2;
+    text-align: left;
+    padding: 3px 8px;
+}
+
+.compact-select-option.selected {
+    background: #251c4a;
+    color: #a78bfa;
+}
+
+.compact-select-option:hover {
+    background: #1f2937;
+    color: #fff;
+}
+
+.connection-select .compact-select-button {
+    height: 34px;
     border-color: #252531;
     border-radius: 8px;
-    background: #111116;
     color: #f4f4f5;
-    font-size: 16px;
+    font-size: 14px;
     font-weight: 700;
-    padding: 8px 34px 8px 12px;
+    padding: 6px 28px 6px 10px;
+}
+
+.database-select .compact-select-button {
+    height: 28px;
+    border-radius: 6px;
+    font-size: 12px;
+    padding: 4px 26px 4px 8px;
 }
 
 .active-connection-meta {
@@ -417,12 +503,20 @@ label {
 }
 
 .connection-action-button {
-    min-width: 36px;
-    height: 42px;
+    min-width: 34px;
+    height: 34px;
     border-radius: 8px;
     padding: 0;
-    font-size: 17px;
-    line-height: 1;
+}
+
+.connection-action-svg {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.6;
 }
 
 .connection-item,
@@ -536,16 +630,6 @@ label {
     background: #151519;
     color: #8b8b98;
     padding: 0;
-}
-
-.database-select {
-    height: 30px;
-    border-color: #282832;
-    border-radius: 6px;
-    background: #111116;
-    color: #d6d6dc;
-    font-size: 13px;
-    padding: 4px 8px;
 }
 
 .schema-tree {

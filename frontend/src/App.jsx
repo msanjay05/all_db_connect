@@ -1,6 +1,7 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import Editor from '@monaco-editor/react';
 import './App.css';
+import CompactSelect from './components/CompactSelect';
 import ResultGrid from './components/ResultGrid';
 import {createQueryTab, DEFAULT_RESULT_PAGE_SIZE, normalizeWorkspace} from './constants/query';
 import {
@@ -188,6 +189,21 @@ function App() {
             || (table.columns || []).some((column) => column.name.toLowerCase().includes(search)),
         );
     }, [schema, tableFilter]);
+    const connectionOptions = useMemo(
+        () => profiles.map((profile) => ({
+            value: profile.id,
+            label: profile.name,
+            title: profile.host,
+        })),
+        [profiles],
+    );
+    const databaseOptions = useMemo(
+        () => databases.map((database) => ({
+            value: database,
+            label: database,
+        })),
+        [databases],
+    );
 
     useEffect(() => {
         runQueryRef.current = runQuery;
@@ -354,6 +370,10 @@ function App() {
     }
 
     function handleConnectionChange(connectionID) {
+        if (!connectionID) {
+            disconnectProfile();
+            return;
+        }
         const profile = profiles.find((item) => item.id === connectionID);
         if (profile) {
             selectProfile(profile);
@@ -405,6 +425,23 @@ function App() {
         });
         setConnectionTestStatus('');
         setStatus(`Editing ${profile.name}. Leave password blank to keep the saved password.`);
+    }
+
+    function disconnectProfile() {
+        const currentConnectionId = selectedConnectionIdRef.current;
+        if (currentConnectionId) {
+            setConnectionWorkspaces((current) => ({
+                ...current,
+                [currentConnectionId]: currentWorkspaceSnapshot(),
+            }));
+        }
+        setSelectedConnectionId('');
+        setShowConnectionForm(false);
+        setProfileForm(defaultProfile);
+        setDatabases([]);
+        setSelectedDatabase('');
+        setSchema({database: '', tables: []});
+        setStatus('Connection disabled');
     }
 
     function closeProfileForm() {
@@ -566,6 +603,8 @@ function App() {
         setIsRunning(true);
         updateQueryTab(tabId, {sql: fullSql, result: null, resultPage: 1});
         setResultEdits({});
+        setResultEditError('');
+        setResultEditSuccess('');
         setPendingUpdateBatch(null);
         setStatus(mode === 'explain' ? 'Explaining query...' : 'Running query...');
         try {
@@ -827,15 +866,13 @@ function App() {
                 <section className="sidebar-connection-card">
                     <div className="active-connection-row">
                         <div className="active-connection-select">
-                            <select
+                            <CompactSelect
+                                className="connection-select"
                                 value={selectedConnectionId}
-                                onChange={(event) => handleConnectionChange(event.target.value)}
-                            >
-                                <option value="">Select connection</option>
-                                {profiles.map((profile) => (
-                                    <option key={profile.id} value={profile.id}>{profile.name}</option>
-                                ))}
-                            </select>
+                                options={connectionOptions}
+                                placeholder="Select connection"
+                                onChange={handleConnectionChange}
+                            />
                             {selectedProfile && (
                                 <div className="active-connection-meta" title={selectedProfile.host}>
                                     <span className="connection-status-icon connected" aria-hidden="true" />
@@ -843,11 +880,23 @@ function App() {
                                 </div>
                             )}
                         </div>
-                        <button className="secondary connection-action-button" onClick={editProfile} disabled={!selectedConnectionId} title="Edit connection">
-                            ✎
+                        <button className="secondary connection-action-button" onClick={editProfile} disabled={!selectedConnectionId} title="Edit connection" aria-label="Edit connection">
+                            <svg className="connection-action-svg" viewBox="0 0 16 16" aria-hidden="true">
+                                <path d="M3 11.5V13h1.5L12 5.5 10.5 4 3 11.5Z" />
+                                <path d="m9.8 4.7 1.5 1.5" />
+                            </svg>
                         </button>
-                        <button className="danger connection-action-button" onClick={deleteProfile} disabled={!selectedConnectionId} title="Remove connection">
-                            ×
+                        <button className="secondary connection-action-button" onClick={disconnectProfile} disabled={!selectedConnectionId} title="Disable connection" aria-label="Disable connection">
+                            <svg className="connection-action-svg" viewBox="0 0 16 16" aria-hidden="true">
+                                <path d="M4 4l8 8M12 4l-8 8" />
+                            </svg>
+                        </button>
+                        <button className="danger connection-action-button" onClick={deleteProfile} disabled={!selectedConnectionId} title="Delete connection" aria-label="Delete connection">
+                            <svg className="connection-action-svg" viewBox="0 0 16 16" aria-hidden="true">
+                                <path d="M5.5 5.5v6M8 5.5v6M10.5 5.5v6" />
+                                <path d="M3.5 4h9M6.5 2.5h3L10 4H6l.5-1.5Z" />
+                                <path d="M4.5 4.5 5 13h6l.5-8.5" />
+                            </svg>
                         </button>
                     </div>
                     <div className="connection-chips">
@@ -907,17 +956,14 @@ function App() {
                         <span>Database</span>
                         <button className="sidebar-refresh" onClick={() => loadDatabases()} disabled={!selectedConnectionId} title="Refresh databases">↻</button>
                     </div>
-                    <select
+                    <CompactSelect
                         className="database-select"
                         value={selectedDatabase}
+                        options={databaseOptions}
+                        placeholder="Select database"
                         disabled={!selectedConnectionId || databases.length === 0}
-                        onChange={(event) => selectDatabase(event.target.value)}
-                    >
-                        <option value="">Select database</option>
-                        {databases.map((database) => (
-                            <option key={database} value={database}>{database}</option>
-                        ))}
-                    </select>
+                        onChange={selectDatabase}
+                    />
                     {selectedConnectionId && databases.length === 0 && (
                         <div className="hint">No databases loaded yet. Use Refresh after selecting a connection.</div>
                     )}
