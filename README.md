@@ -1,19 +1,42 @@
-# README
+# All DB Connector
 
-## About
+All DB Connector is a Wails + React desktop app for connecting to MySQL databases, browsing schema details, running queries, filtering results, exporting CSVs, and safely editing result rows.
 
-This is the official Wails React template.
+## Features
 
-You can configure the project by editing `wails.json`. More information about the project settings can be found
-here: https://wails.io/docs/reference/project-config
+- Save and manage multiple MySQL connection profiles.
+- Mark a connection as read-only to allow only DQL statements such as `SELECT`, `SHOW`, `DESCRIBE`, and `EXPLAIN`.
+- Browse databases, tables, columns, row counts, and indexes.
+- Run SQL with multiple query tabs, history, formatting, explain, stop query, and CSV export.
+- View paginated results with 50 rows shown by default.
+- Filter result columns by text, number, date presets, date/time comparisons, and date ranges.
+- Sort result columns with primary key columns first, then remaining columns alphabetically.
+- Edit result cells for non-read-only connections and confirm generated `UPDATE ... WHERE <primary_key> = ...` queries before running them.
 
-## Live Development
+## Development
 
-To run in live development mode, run `wails dev` in the project directory. This will run a Vite development
-server that will provide very fast hot reload of your frontend changes. If you want to develop in a browser
-and have access to your Go methods, there is also a dev server that runs on http://localhost:34115. Connect
-to this in your browser, and you can call your Go code from devtools.
+Run the app in live development mode:
+
+```sh
+wails dev
+```
+
+Run the frontend build:
+
+```sh
+npm --prefix frontend run build
+```
+
+Run Go tests:
+
+```sh
+go test ./...
+```
 
 ## Building
 
-To build a redistributable, production mode package, use `wails build`.
+Build a production desktop package:
+
+```sh
+wails build
+```

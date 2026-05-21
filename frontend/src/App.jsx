@@ -51,6 +51,16 @@ function createQueryTab(id) {
     };
 }
 
+function normalizeWorkspace(workspace) {
+    const tabs = Array.isArray(workspace?.queryTabs) && workspace.queryTabs.length
+        ? workspace.queryTabs
+        : [createQueryTab(1)];
+    const activeTabId = tabs.some((tab) => tab.id === workspace?.activeTabId)
+        ? workspace.activeTabId
+        : tabs[0].id;
+    return {queryTabs: tabs, activeTabId};
+}
+
 function App() {
     const [profiles, setProfiles] = useState([]);
     const [selectedConnectionId, setSelectedConnectionId] = useState('');
@@ -62,6 +72,7 @@ function App() {
     const [schema, setSchema] = useState({database: '', tables: []});
     const [queryTabs, setQueryTabs] = useState(() => [createQueryTab(1)]);
     const [activeTabId, setActiveTabId] = useState(1);
+    const [connectionWorkspaces, setConnectionWorkspaces] = useState({});
     const [history, setHistory] = useState([]);
     const [showHistory, setShowHistory] = useState(false);
     const [tableFilter, setTableFilter] = useState('');
@@ -76,6 +87,7 @@ function App() {
     const queryTabsRef = useRef(queryTabs);
     const selectedConnectionIdRef = useRef(selectedConnectionId);
     const selectedDatabaseRef = useRef(selectedDatabase);
+    const connectionWorkspacesRef = useRef(connectionWorkspaces);
 
     useEffect(() => {
         schemaRef.current = schema;
@@ -181,9 +193,23 @@ function App() {
     }, [activeTabId, queryTabs, selectedConnectionId, selectedDatabase]);
 
     useEffect(() => {
+        connectionWorkspacesRef.current = connectionWorkspaces;
+    }, [connectionWorkspaces]);
+
+    useEffect(() => {
         setResultEdits({});
         setPendingUpdateBatch(null);
     }, [activeTabId, selectedConnectionId, selectedDatabase]);
+
+    useEffect(() => {
+        if (!selectedConnectionId) {
+            return;
+        }
+        setConnectionWorkspaces((current) => ({
+            ...current,
+            [selectedConnectionId]: normalizeWorkspace({queryTabs, activeTabId}),
+        }));
+    }, [queryTabs, activeTabId, selectedConnectionId]);
 
     const updateQueryTab = useCallback((tabId, updater) => {
         setQueryTabs((currentTabs) => currentTabs.map((tab) => {
@@ -272,6 +298,22 @@ function App() {
         }
     }, []);
 
+    function currentWorkspaceSnapshot() {
+        const tabs = queryTabsRef.current.length ? queryTabsRef.current : [createQueryTab(1)];
+        const activeId = activeTabIdRef.current || tabs[0].id;
+        const editorSql = editorRef.current?.getValue?.();
+        const snapshotTabs = tabs.map((tab) =>
+            tab.id === activeId && editorSql !== undefined ? {...tab, sql: editorSql} : tab,
+        );
+        return normalizeWorkspace({queryTabs: snapshotTabs, activeTabId: activeId});
+    }
+
+    function restoreConnectionWorkspace(connectionId) {
+        const workspace = normalizeWorkspace(connectionWorkspacesRef.current[connectionId]);
+        setQueryTabs(workspace.queryTabs);
+        setActiveTabId(workspace.activeTabId);
+    }
+
     async function refreshProfiles() {
         try {
             const items = await ListConnectionProfiles();
@@ -311,6 +353,14 @@ function App() {
     }
 
     function selectProfile(profile) {
+        const currentConnectionId = selectedConnectionIdRef.current;
+        if (currentConnectionId) {
+            setConnectionWorkspaces((current) => ({
+                ...current,
+                [currentConnectionId]: currentWorkspaceSnapshot(),
+            }));
+        }
+        restoreConnectionWorkspace(profile.id);
         setSelectedConnectionId(profile.id);
         setShowConnectionForm(false);
         setProfileForm(defaultProfile);
@@ -431,7 +481,14 @@ function App() {
         }
         try {
             await DeleteConnectionProfile(selectedConnectionId);
+            setConnectionWorkspaces((current) => {
+                const next = {...current};
+                delete next[selectedConnectionId];
+                return next;
+            });
             setSelectedConnectionId('');
+            setQueryTabs([createQueryTab(1)]);
+            setActiveTabId(1);
             setDatabases([]);
             setSelectedDatabase('');
             setSchema({database: '', tables: []});
