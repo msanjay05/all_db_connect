@@ -1,9 +1,11 @@
 import {useCallback, useEffect, useMemo, useRef, useState} from 'react';
-import Editor from '@monaco-editor/react';
 import './App.css';
+import AboutDialog from './components/AboutDialog';
 import HistoryPanel from './components/HistoryPanel';
+import DatabaseTypeIcon from './components/DatabaseTypeIcon';
 import QueryToolbar from './components/QueryToolbar';
 import ResultsPanel from './components/ResultsPanel';
+import SqlEditor from './components/SqlEditor';
 import Sidebar from './components/Sidebar';
 import UpdateConfirmDialog from './components/UpdateConfirmDialog';
 import {createQueryTab, DEFAULT_RESULT_PAGE_SIZE, normalizeWorkspace} from './constants/query';
@@ -30,6 +32,7 @@ import {
     buildSuggestions,
     completionContext,
     formatSql,
+    getCompletionWord,
     getExecutableSql,
     quoteIdentifier,
 } from './utils/sql';
@@ -47,7 +50,7 @@ import {
     KillQuery,
     ListDatabases,
     ListConnectionProfiles,
-    ListQueryHistory,
+    ListConnectionQueryHistory,
     SaveCSVFile,
     SaveConnectionProfile,
     SetDefaultDatabase,
@@ -57,13 +60,42 @@ import {ClipboardSetText} from "../wailsjs/runtime/runtime";
 
 const defaultProfile = {
     id: '',
+    type: 'mysql',
     name: 'Local MySQL',
     host: '127.0.0.1',
     port: 3306,
     username: 'root',
     password: '',
+    database: '',
+    connectionString: '',
+    filePath: '',
+    account: '',
+    projectId: '',
+    region: '',
+    warehouse: '',
+    role: '',
+    authType: '',
+    extraParams: '',
     readOnly: false,
 };
+const databaseTypeOptions = [
+    {value: 'athena', label: 'Amazon Athena', icon: <DatabaseTypeIcon type="athena" />},
+    {value: 'redshift', label: 'Amazon Redshift', icon: <DatabaseTypeIcon type="redshift" />},
+    {value: 'bigquery', label: 'BigQuery', icon: <DatabaseTypeIcon type="bigquery" />},
+    {value: 'clickhouse', label: 'ClickHouse', icon: <DatabaseTypeIcon type="clickhouse" />},
+    {value: 'databricks', label: 'Databricks', icon: <DatabaseTypeIcon type="databricks" />},
+    {value: 'druid', label: 'Druid', icon: <DatabaseTypeIcon type="druid" />},
+    {value: 'druid-jdbc', label: 'Druid JDBC', icon: <DatabaseTypeIcon type="druid-jdbc" />},
+    {value: 'mysql', label: 'MySQL', icon: <DatabaseTypeIcon type="mysql" />},
+    {value: 'postgres', label: 'PostgreSQL', icon: <DatabaseTypeIcon type="postgres" />},
+    {value: 'presto', label: 'Presto', icon: <DatabaseTypeIcon type="presto" />},
+    {value: 'snowflake', label: 'Snowflake', icon: <DatabaseTypeIcon type="snowflake" />},
+    {value: 'spark-sql', label: 'Spark SQL', icon: <DatabaseTypeIcon type="spark-sql" />},
+    {value: 'sqlserver', label: 'SQL Server', icon: <DatabaseTypeIcon type="sqlserver" />},
+    {value: 'mongodb', label: 'MongoDB', icon: <DatabaseTypeIcon type="mongodb" />},
+    {value: 'sqlite', label: 'SQLite', icon: <DatabaseTypeIcon type="sqlite" />},
+    {value: 'starburst', label: 'Starburst (Trino)', icon: <DatabaseTypeIcon type="starburst" />},
+];
 const EDITOR_WORKSPACE_STORAGE_KEY = 'all-db-connector.editor-workspaces.v1';
 const persistedEditorState = loadPersistedEditorState();
 const initialEditorWorkspace = persistedEditorState.activeConnectionId
@@ -84,15 +116,20 @@ function App() {
     const [connectionWorkspaces, setConnectionWorkspaces] = useState(persistedEditorState.workspaces);
     const [history, setHistory] = useState([]);
     const [showHistory, setShowHistory] = useState(false);
+    const [showAbout, setShowAbout] = useState(false);
     const [tableFilter, setTableFilter] = useState('');
     const [status, setStatus] = useState('Ready');
     const [isRunning, setIsRunning] = useState(false);
+    const [editorHeight, setEditorHeight] = useState(360);
     const [resultEdits, setResultEdits] = useState({});
     const [resultEditError, setResultEditError] = useState('');
     const [resultEditSuccess, setResultEditSuccess] = useState('');
     const [pendingUpdateBatch, setPendingUpdateBatch] = useState(null);
     const schemaRef = useRef(schema);
+    const mainRef = useRef(null);
     const editorRef = useRef(null);
+    const completionProviderRef = useRef(null);
+    const persistSqlTimeoutRef = useRef(null);
     const runQueryRef = useRef(() => {});
     const activeTabIdRef = useRef(activeTabId);
     const queryTabsRef = useRef(queryTabs);
@@ -100,6 +137,8 @@ function App() {
     const selectedDatabaseRef = useRef(selectedDatabase);
     const connectionWorkspacesRef = useRef(connectionWorkspaces);
     const restoredInitialConnectionRef = useRef(false);
+    const resetIdleTimerRef = useRef(null);
+    const disconnectProfileRef = useRef(null);
 
     useEffect(() => {
         schemaRef.current = schema;
@@ -108,6 +147,11 @@ function App() {
     useEffect(() => {
         refreshProfiles();
         refreshHistory();
+        return () => {
+            completionProviderRef.current?.dispose?.();
+            completionProviderRef.current = null;
+            window.clearTimeout(persistSqlTimeoutRef.current);
+        };
     }, []);
 
     const selectedProfile = useMemo(
@@ -126,8 +170,11 @@ function App() {
     const activeSort = activeTab?.sort || {column: '', direction: ''};
     const activeResultPageSize = activeTab?.resultPageSize || DEFAULT_RESULT_PAGE_SIZE;
     const activeResultPage = activeTab?.resultPage || 1;
-    const editableTableName = useMemo(() => inferEditableTableName(activeTab?.sql || ''), [activeTab?.sql]);
-    const canEditResults = Boolean(selectedProfile && !selectedProfile.readOnly && editableTableName);
+    const editableTableName = useMemo(
+        () => inferEditableTableName(activeTab?.executedSql || ''),
+        [activeTab?.executedSql],
+    );
+    const canEditResults = Boolean(selectedProfile && isSqlProfile(selectedProfile) && !selectedProfile.readOnly && editableTableName);
     const resultEditItems = useMemo(() => Object.values(resultEdits), [resultEdits]);
     const resultEditCount = resultEditItems.length;
     const resultPrimaryKeyNames = useMemo(
@@ -178,6 +225,12 @@ function App() {
         [filteredRows, resultPageStart, activeResultPageSize],
     );
 
+    const resultsPanelState = useMemo(() => ({
+        result: activeTab?.result ?? null,
+        showFilters: Boolean(activeTab?.showFilters),
+        columnFilters: activeTab?.columnFilters ?? {},
+    }), [activeTab?.result, activeTab?.showFilters, activeTab?.columnFilters]);
+
     const filteredSchemaTables = useMemo(() => {
         const search = tableFilter.trim().toLowerCase();
         const tables = (schema.tables || []).map((table) => ({
@@ -196,7 +249,8 @@ function App() {
         () => profiles.map((profile) => ({
             value: profile.id,
             label: profile.name,
-            title: profile.host,
+            icon: <DatabaseTypeIcon type={profile.type} />,
+            title: connectionTarget(profile),
         })),
         [profiles],
     );
@@ -228,6 +282,55 @@ function App() {
     }, [selectedConnectionId, connectionWorkspaces]);
 
     useEffect(() => {
+        disconnectProfileRef.current = disconnectProfile;
+    });
+
+    const triggerActivity = useCallback(() => {
+        resetIdleTimerRef.current?.();
+    }, []);
+
+    useEffect(() => {
+        if (!selectedConnectionId) {
+            resetIdleTimerRef.current = null;
+            return;
+        }
+
+        let idleTimer;
+
+        const resetIdleTimer = () => {
+            if (idleTimer) {
+                window.clearTimeout(idleTimer);
+            }
+            idleTimer = window.setTimeout(() => {
+                disconnectProfileRef.current?.();
+                setStatus('Disconnected due to 1 minute of inactivity');
+            }, 60000);
+        };
+
+        resetIdleTimerRef.current = resetIdleTimer;
+        resetIdleTimer();
+
+        const events = ['mousemove', 'mousedown', 'keydown', 'scroll', 'click'];
+        const handleActivity = () => {
+            resetIdleTimer();
+        };
+
+        events.forEach((event) => {
+            window.addEventListener(event, handleActivity, true);
+        });
+
+        return () => {
+            if (idleTimer) {
+                window.clearTimeout(idleTimer);
+            }
+            events.forEach((event) => {
+                window.removeEventListener(event, handleActivity, true);
+            });
+            resetIdleTimerRef.current = null;
+        };
+    }, [selectedConnectionId]);
+
+    useEffect(() => {
         function persistBeforeUnload() {
             const currentConnectionId = selectedConnectionIdRef.current;
             if (!currentConnectionId) {
@@ -238,7 +341,7 @@ function App() {
                 ...connectionWorkspacesRef.current,
                 [currentConnectionId]: currentWorkspaceSnapshot(),
             };
-            persistEditorState(currentConnectionId, nextWorkspaces);
+            persistEditorState('', nextWorkspaces);
         }
 
         window.addEventListener('beforeunload', persistBeforeUnload);
@@ -282,7 +385,43 @@ function App() {
         updateQueryTab(activeTabIdRef.current, updater);
     }, [updateQueryTab]);
 
+    const flushActiveTabSql = useCallback(() => {
+        const tabId = activeTabIdRef.current;
+        const sql = editorRef.current?.getValue?.() ?? '';
+        setQueryTabs((currentTabs) => {
+            const currentTab = currentTabs.find((tab) => tab.id === tabId);
+            if (!currentTab || currentTab.sql === sql) {
+                return currentTabs;
+            }
+            return currentTabs.map((tab) => tab.id === tabId ? {...tab, sql} : tab);
+        });
+    }, []);
+
+    const scheduleIdleSqlFlush = useCallback(() => {
+        window.clearTimeout(persistSqlTimeoutRef.current);
+        persistSqlTimeoutRef.current = window.setTimeout(() => {
+            persistSqlTimeoutRef.current = null;
+            flushActiveTabSql();
+        }, 1500);
+    }, [flushActiveTabSql]);
+
+    const handleEditorSqlChange = useCallback(() => {
+        triggerActivity();
+        scheduleIdleSqlFlush();
+    }, [triggerActivity, scheduleIdleSqlFlush]);
+
+    const selectQueryTab = useCallback((tabId) => {
+        if (tabId === activeTabIdRef.current) {
+            return;
+        }
+        window.clearTimeout(persistSqlTimeoutRef.current);
+        flushActiveTabSql();
+        setActiveTabId(tabId);
+    }, [flushActiveTabSql]);
+
     function addQueryTab() {
+        window.clearTimeout(persistSqlTimeoutRef.current);
+        flushActiveTabSql();
         const nextId = Math.max(...queryTabs.map((tab) => tab.id), 0) + 1;
         setQueryTabs((currentTabs) => [...currentTabs, createQueryTab(nextId)]);
         setActiveTabId(nextId);
@@ -291,6 +430,10 @@ function App() {
     function closeQueryTab(tabId) {
         if (queryTabs.length === 1) {
             return;
+        }
+        if (tabId === activeTabId) {
+            window.clearTimeout(persistSqlTimeoutRef.current);
+            flushActiveTabSql();
         }
         const remainingTabs = queryTabs.filter((tab) => tab.id !== tabId);
         setQueryTabs(remainingTabs);
@@ -446,9 +589,13 @@ function App() {
         }
     }
 
-    async function refreshHistory() {
+    async function refreshHistory(connectionID = selectedConnectionIdRef.current) {
+        if (!connectionID) {
+            setHistory([]);
+            return;
+        }
         try {
-            setHistory((await ListQueryHistory(10)) || []);
+            setHistory((await ListConnectionQueryHistory(connectionID, 100)) || []);
         } catch (error) {
             setStatus(errorMessage(error));
         }
@@ -462,10 +609,15 @@ function App() {
     }
 
     function updateProfileField(field, value) {
-        setProfileForm((current) => ({
-            ...current,
-            [field]: field === 'port' ? Number(value) : value,
-        }));
+        setProfileForm((current) => {
+            if (field === 'type') {
+                return profileDefaultsForType(value, current);
+            }
+            return {
+                ...current,
+                [field]: field === 'port' ? Number(value) : value,
+            };
+        });
     }
 
     function handleConnectionChange(connectionID) {
@@ -487,6 +639,9 @@ function App() {
         resetConnectionData();
         setStatus(`Selected ${profile.name}`);
         loadDatabases(profile.id, profile.database);
+        if (showHistory) {
+            refreshHistory(profile.id);
+        }
     }
 
     function newProfile() {
@@ -505,12 +660,22 @@ function App() {
         setShowConnectionForm(true);
         setProfileForm({
             id: profile.id,
+            type: profile.type || 'mysql',
             name: profile.name,
             host: profile.host,
-            port: profile.port || 3306,
+            port: profile.port || defaultPortForType(profile.type || 'mysql'),
             username: profile.username,
             password: '',
             database: profile.database || '',
+            connectionString: profile.connectionString || '',
+            filePath: profile.filePath || '',
+            account: profile.account || '',
+            projectId: profile.projectId || '',
+            region: profile.region || '',
+            warehouse: profile.warehouse || '',
+            role: profile.role || '',
+            authType: profile.authType || '',
+            extraParams: profile.extraParams || '',
             readOnly: Boolean(profile.readOnly),
         });
         setConnectionTestStatus('');
@@ -523,6 +688,7 @@ function App() {
         setShowConnectionForm(false);
         setProfileForm(defaultProfile);
         resetConnectionData();
+        setHistory([]);
         setStatus('Connection disabled');
     }
 
@@ -540,7 +706,9 @@ function App() {
         try {
             const loadedDatabases = await ListDatabases(connectionId);
             setDatabases(loadedDatabases || []);
-            const databaseToSelect = defaultDatabase && loadedDatabases?.includes(defaultDatabase) ? defaultDatabase : '';
+            const databaseToSelect = defaultDatabase && loadedDatabases?.includes(defaultDatabase)
+                ? defaultDatabase
+                : (loadedDatabases?.length === 1 ? loadedDatabases[0] : '');
             setSelectedDatabase(databaseToSelect);
             if (databaseToSelect) {
                 loadSchema(connectionId, databaseToSelect);
@@ -581,7 +749,8 @@ function App() {
 
     async function saveProfile() {
         try {
-            const saved = await SaveConnectionProfile({...profileForm, database: ''});
+            const database = ['mongodb', 'bigquery'].includes(profileForm.type) ? profileForm.database : '';
+            const saved = await SaveConnectionProfile({...profileForm, database});
             switchConnectionWorkspace(saved.id);
             setSelectedConnectionId(saved.id);
             setProfileForm(defaultProfile);
@@ -611,6 +780,7 @@ function App() {
             setSelectedConnectionId('');
             applyWorkspace({queryTabs: [createQueryTab(1)], activeTabId: 1});
             resetConnectionData();
+            setHistory([]);
             await refreshProfiles();
             setStatus('Deleted connection profile');
         } catch (error) {
@@ -643,10 +813,16 @@ function App() {
     }
 
     async function runQuery() {
+        triggerActivity();
+        window.clearTimeout(persistSqlTimeoutRef.current);
+        flushActiveTabSql();
         await executeCurrentSql('run');
     }
 
     async function explainQuery() {
+        triggerActivity();
+        window.clearTimeout(persistSqlTimeoutRef.current);
+        flushActiveTabSql();
         await executeCurrentSql('explain');
     }
 
@@ -655,6 +831,7 @@ function App() {
         const database = selectedDatabaseRef.current;
         const tabId = activeTabIdRef.current;
         const tab = queryTabsRef.current.find((item) => item.id === tabId);
+        const profile = profiles.find((item) => item.id === connectionID);
         const fullSql = editorRef.current?.getValue?.() ?? tab?.sql ?? '';
         const executableSql = getExecutableSql(editorRef.current, fullSql);
         const sql = mode === 'explain' ? buildExplainSql(executableSql) : executableSql;
@@ -667,6 +844,10 @@ function App() {
             setStatus('Select a database first');
             return;
         }
+        if (mode === 'explain' && profile?.type === 'mongodb') {
+            setStatus('Explain is not available for MongoDB JSON commands');
+            return;
+        }
         if (!tab) {
             return;
         }
@@ -675,7 +856,7 @@ function App() {
             return;
         }
         setIsRunning(true);
-        updateQueryTab(tabId, {sql: fullSql, result: null, resultPage: 1});
+        updateQueryTab(tabId, {sql: fullSql, executedSql: executableSql, result: null, resultPage: 1});
         setResultEdits({});
         setResultEditError('');
         setResultEditSuccess('');
@@ -743,7 +924,7 @@ function App() {
             setStatus(validationError);
             return;
         }
-        const updateSql = buildUpdateSql(editableTableName, column, nextValue, rowKey);
+        const updateSql = buildUpdateSql(editableTableName, column, nextValue, rowKey, selectedProfile?.type);
         if (!updateSql) {
             const message = 'Could not build update query for this value';
             setResultEditError(message);
@@ -834,6 +1015,8 @@ function App() {
     }
 
     function formatQuery() {
+        triggerActivity();
+        window.clearTimeout(persistSqlTimeoutRef.current);
         const editor = editorRef.current;
         const tabId = activeTabIdRef.current;
         const tab = queryTabsRef.current.find((item) => item.id === tabId);
@@ -852,6 +1035,7 @@ function App() {
     }
 
     function saveQuery() {
+        triggerActivity();
         const tabId = activeTabIdRef.current;
         const tab = queryTabsRef.current.find((item) => item.id === tabId);
         const sql = editorRef.current?.getValue?.() ?? tab?.sql ?? '';
@@ -872,6 +1056,7 @@ function App() {
     }
 
     async function exportCsv() {
+        triggerActivity();
         const tab = activeTab;
         const columns = sortedResultColumns;
         const rows = filteredRows;
@@ -917,7 +1102,7 @@ function App() {
             forceMoveMarkers: true,
         }]);
         editor.focus();
-        updateActiveTab({sql: editor.getValue()});
+        scheduleIdleSqlFlush();
     }
 
     function handleEditorMount(editor, monaco) {
@@ -925,13 +1110,74 @@ function App() {
         editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => {
             runQueryRef.current();
         });
-        monaco.languages.registerCompletionItemProvider('sql', {
-            triggerCharacters: ['.'],
-            provideCompletionItems: (model, position) => ({
-                suggestions: buildSuggestions(monaco, schemaRef.current, completionContext(model, position)),
-            }),
+        completionProviderRef.current?.dispose?.();
+        completionProviderRef.current = monaco.languages.registerCompletionItemProvider('sql', {
+            triggerCharacters: ['.', ' '],
+            provideCompletionItems: (model, position) => {
+                const word = getCompletionWord(model, position);
+                const range = {
+                    startLineNumber: position.lineNumber,
+                    endLineNumber: position.lineNumber,
+                    startColumn: word.startColumn,
+                    endColumn: position.column,
+                };
+                const context = completionContext(model, position, word);
+                return {
+                    suggestions: buildSuggestions(monaco, schemaRef.current, context, range),
+                };
+            },
         });
         editor.focus();
+    }
+
+    function startEditorResize(event) {
+        const mainElement = mainRef.current;
+        if (!mainElement) {
+            return;
+        }
+        event.preventDefault();
+        const bounds = mainElement.getBoundingClientRect();
+        const toolbarHeight = 36;
+        const dividerHeight = 8;
+        const minEditorHeight = 140;
+        const minResultsHeight = 180;
+        const maxEditorHeight = Math.max(minEditorHeight, bounds.height - toolbarHeight - dividerHeight - minResultsHeight);
+        let nextEditorHeight = editorHeight;
+        let animationFrame = 0;
+
+        function applyEditorHeight() {
+            animationFrame = 0;
+            mainElement.style.gridTemplateRows = `36px ${nextEditorHeight}px 8px minmax(0, 1fr)`;
+        }
+
+        function updateEditorHeight(pointerEvent) {
+            const nextHeight = pointerEvent.clientY - bounds.top - toolbarHeight;
+            nextEditorHeight = Math.min(Math.max(nextHeight, minEditorHeight), maxEditorHeight);
+            if (!animationFrame) {
+                animationFrame = window.requestAnimationFrame(applyEditorHeight);
+            }
+        }
+
+        function stopResize() {
+            if (animationFrame) {
+                window.cancelAnimationFrame(animationFrame);
+                applyEditorHeight();
+            }
+            setEditorHeight(nextEditorHeight);
+            mainElement.classList.remove('resizing');
+            document.body.style.cursor = '';
+            document.body.style.userSelect = '';
+            window.removeEventListener('pointermove', updateEditorHeight);
+            window.removeEventListener('pointerup', stopResize);
+            window.removeEventListener('pointercancel', stopResize);
+        }
+
+        mainElement.classList.add('resizing');
+        document.body.style.cursor = 'row-resize';
+        document.body.style.userSelect = 'none';
+        window.addEventListener('pointermove', updateEditorHeight);
+        window.addEventListener('pointerup', stopResize);
+        window.addEventListener('pointercancel', stopResize);
     }
 
     return (
@@ -965,92 +1211,102 @@ function App() {
                 setTableFilter={setTableFilter}
                 loadSchema={loadSchema}
                 insertTableReference={insertTableReference}
+                databaseTypeOptions={databaseTypeOptions}
+                openAboutDialog={() => setShowAbout(true)}
             />
 
-            <main className="main">
-                {!selectedConnectionId ? (
-                    <section className="editor-empty-state">
-                        <strong>Select or add a connection</strong>
-                        <span>The SQL editor will appear after a connection is active.</span>
-                    </section>
-                ) : (
-                    <>
-                        <QueryToolbar
-                            queryTabs={queryTabs}
-                            activeTabId={activeTabId}
-                            activeTab={activeTab}
-                            setActiveTabId={setActiveTabId}
-                            closeQueryTab={closeQueryTab}
-                            addQueryTab={addQueryTab}
-                            updateActiveTab={updateActiveTab}
-                            runQuery={runQuery}
-                            isRunning={isRunning}
-                            killQuery={killQuery}
-                            explainQuery={explainQuery}
-                            formatQuery={formatQuery}
-                            toggleHistory={toggleHistory}
-                            saveQuery={saveQuery}
-                        />
-                        <section className="editor-panel">
-                            <Editor
-                                height="100%"
-                                key={`${selectedConnectionId}:${activeTab?.id || 'empty'}`}
-                                defaultLanguage="sql"
-                                theme="vs-dark"
-                                value={activeTab?.sql || ''}
-                                onChange={(value) => updateActiveTab({sql: value || ''})}
-                                onMount={handleEditorMount}
-                                options={{
-                                    minimap: {enabled: false},
-                                    fontSize: 14,
-                                    automaticLayout: true,
-                                    wordWrap: 'on',
-                                    snippetSuggestions: 'none',
-                                    wordBasedSuggestions: 'off',
-                                }}
-                            />
+            <div className={showHistory ? 'content-area show-history' : 'content-area'}>
+                <main
+                    ref={mainRef}
+                    className="main"
+                    style={selectedConnectionId ? {gridTemplateRows: `36px ${editorHeight}px 8px minmax(0, 1fr)`} : undefined}
+                >
+                    {!selectedConnectionId ? (
+                        <section className="editor-empty-state">
+                            <strong>Select or add a connection</strong>
+                            <span>The SQL editor will appear after a connection is active.</span>
                         </section>
-                        <ResultsPanel
-                            resultEditCount={resultEditCount}
-                            cancelResultEdits={cancelResultEdits}
-                            showResultUpdateConfirmation={showResultUpdateConfirmation}
-                            isRunning={isRunning}
-                            activeTab={activeTab}
-                            toggleColumnFilters={toggleColumnFilters}
-                            clearAllColumnFilters={clearAllColumnFilters}
-                            sortedResultColumns={sortedResultColumns}
-                            paginatedRows={paginatedRows}
-                            resultPageStart={resultPageStart}
-                            updateColumnFilter={updateColumnFilter}
-                            clearColumnFilter={clearColumnFilter}
-                            copyText={copyText}
-                            activeSort={activeSort}
-                            toggleResultSort={toggleResultSort}
-                            canEditResults={canEditResults}
-                            resultEdits={resultEdits}
-                            resultPrimaryKeyNames={resultPrimaryKeyNames}
-                            requestCellUpdate={requestCellUpdate}
-                            resultEditError={resultEditError}
-                            resultEditSuccess={resultEditSuccess}
-                            filteredRows={filteredRows}
-                            activeResultPageSize={activeResultPageSize}
-                            updateResultPageSize={updateResultPageSize}
-                            currentResultPage={currentResultPage}
-                            updateResultPage={updateResultPage}
-                            resultPageCount={resultPageCount}
-                            exportCsv={exportCsv}
-                        />
-                    </>
-                )}
-            </main>
+                    ) : (
+                        <>
+                            <QueryToolbar
+                                queryTabs={queryTabs}
+                                activeTabId={activeTabId}
+                                activeTab={activeTab}
+                                setActiveTabId={selectQueryTab}
+                                closeQueryTab={closeQueryTab}
+                                addQueryTab={addQueryTab}
+                                updateActiveTab={updateActiveTab}
+                                runQuery={runQuery}
+                                isRunning={isRunning}
+                                killQuery={killQuery}
+                                explainQuery={explainQuery}
+                                formatQuery={formatQuery}
+                                toggleHistory={toggleHistory}
+                                saveQuery={saveQuery}
+                            />
+                            <section className="editor-panel">
+                                <SqlEditor
+                                    tabId={activeTab?.id || 'empty'}
+                                    connectionId={selectedConnectionId}
+                                    initialSql={activeTab?.sql || ''}
+                                    language={selectedProfile?.type === 'mongodb' ? 'json' : 'sql'}
+                                    onMount={handleEditorMount}
+                                    onSqlChange={handleEditorSqlChange}
+                                />
+                            </section>
+                            <div
+                                className="vertical-resize-handle"
+                                role="separator"
+                                aria-orientation="horizontal"
+                                aria-label="Resize editor and results panels"
+                                title="Drag to resize editor and results"
+                                onPointerDown={startEditorResize}
+                                onDoubleClick={() => setEditorHeight(360)}
+                            />
+                            <ResultsPanel
+                                resultEditCount={resultEditCount}
+                                cancelResultEdits={cancelResultEdits}
+                                showResultUpdateConfirmation={showResultUpdateConfirmation}
+                                isRunning={isRunning}
+                                result={resultsPanelState.result}
+                                showFilters={resultsPanelState.showFilters}
+                                columnFilters={resultsPanelState.columnFilters}
+                                toggleColumnFilters={toggleColumnFilters}
+                                clearAllColumnFilters={clearAllColumnFilters}
+                                sortedResultColumns={sortedResultColumns}
+                                paginatedRows={paginatedRows}
+                                resultPageStart={resultPageStart}
+                                updateColumnFilter={updateColumnFilter}
+                                clearColumnFilter={clearColumnFilter}
+                                copyText={copyText}
+                                activeSort={activeSort}
+                                toggleResultSort={toggleResultSort}
+                                canEditResults={canEditResults}
+                                resultEdits={resultEdits}
+                                resultPrimaryKeyNames={resultPrimaryKeyNames}
+                                requestCellUpdate={requestCellUpdate}
+                                resultEditError={resultEditError}
+                                resultEditSuccess={resultEditSuccess}
+                                filteredRows={filteredRows}
+                                activeResultPageSize={activeResultPageSize}
+                                updateResultPageSize={updateResultPageSize}
+                                currentResultPage={currentResultPage}
+                                updateResultPage={updateResultPage}
+                                resultPageCount={resultPageCount}
+                                exportCsv={exportCsv}
+                            />
+                        </>
+                    )}
+                </main>
 
-            {showHistory && (
-                <HistoryPanel
-                    history={history}
-                    closeHistory={() => setShowHistory(false)}
-                    updateActiveTab={updateActiveTab}
-                />
-            )}
+                {showHistory && (
+                    <HistoryPanel
+                        history={history}
+                        closeHistory={() => setShowHistory(false)}
+                        copyText={copyText}
+                    />
+                )}
+            </div>
             <UpdateConfirmDialog
                 pendingUpdateBatch={pendingUpdateBatch}
                 copyText={copyText}
@@ -1058,6 +1314,7 @@ function App() {
                 isRunning={isRunning}
                 runPendingUpdateBatch={runPendingUpdateBatch}
             />
+            {showAbout && <AboutDialog onClose={() => setShowAbout(false)} />}
         </div>
     )
 }
@@ -1131,6 +1388,106 @@ function sanitizeTabForPersistence(tab) {
         resultPage: tab.resultPage || 1,
         resultPageSize: tab.resultPageSize || DEFAULT_RESULT_PAGE_SIZE,
     };
+}
+
+function defaultPortForType(type) {
+    switch (type) {
+        case 'clickhouse':
+            return 9000;
+        case 'presto':
+        case 'starburst':
+            return 8080;
+        case 'postgres':
+            return 5432;
+        case 'redshift':
+            return 5439;
+        case 'sqlserver':
+            return 1433;
+        case 'mongodb':
+            return 27017;
+        case 'sqlite':
+            return 0;
+        case 'mysql':
+        default:
+            return 3306;
+    }
+}
+
+function profileDefaultsForType(type, current = defaultProfile) {
+    const normalizedType = type || 'mysql';
+    const base = {
+        ...current,
+        type: normalizedType,
+        connectionString: current.connectionString || '',
+        filePath: current.filePath || '',
+        account: current.account || '',
+        projectId: current.projectId || '',
+        region: current.region || '',
+        warehouse: current.warehouse || '',
+        role: current.role || '',
+        authType: current.authType || '',
+        extraParams: current.extraParams || '',
+    };
+    if (normalizedType === 'athena') {
+        return {...base, name: current.name === 'Local MySQL' ? 'Amazon Athena' : current.name, host: '', port: 0, region: current.region || 'us-east-1', username: '', database: ''};
+    }
+    if (normalizedType === 'bigquery') {
+        return {...base, name: current.name === 'Local MySQL' ? 'BigQuery' : current.name, host: '', port: 0, username: '', database: ''};
+    }
+    if (normalizedType === 'clickhouse') {
+        return {...base, name: current.name === 'Local MySQL' ? 'ClickHouse' : current.name, host: current.host || '127.0.0.1', port: 9000, username: current.username || 'default'};
+    }
+    if (normalizedType === 'databricks') {
+        return {...base, name: current.name === 'Local MySQL' ? 'Databricks' : current.name, host: current.host || '', port: 0, username: ''};
+    }
+    if (normalizedType === 'druid' || normalizedType === 'druid-jdbc') {
+        return {...base, name: current.name === 'Local MySQL' ? (normalizedType === 'druid-jdbc' ? 'Druid JDBC' : 'Druid') : current.name, host: current.host || '127.0.0.1:8888', port: 0, username: ''};
+    }
+    if (normalizedType === 'presto') {
+        return {...base, name: current.name === 'Local MySQL' ? 'Presto' : current.name, host: current.host || '127.0.0.1', port: 8080, username: current.username || 'presto'};
+    }
+    if (normalizedType === 'starburst') {
+        return {...base, name: current.name === 'Local MySQL' ? 'Starburst' : current.name, host: current.host || '', port: 8080, username: current.username || 'trino'};
+    }
+    if (normalizedType === 'redshift') {
+        return {...base, name: current.name === 'Local MySQL' ? 'Amazon Redshift' : current.name, host: current.host || '', port: 5439};
+    }
+    if (normalizedType === 'snowflake') {
+        return {...base, name: current.name === 'Local MySQL' ? 'Snowflake' : current.name, host: '', port: 0};
+    }
+    if (normalizedType === 'spark-sql') {
+        return {...base, name: current.name === 'Local MySQL' ? 'Spark SQL' : current.name, host: current.host || '', port: 0};
+    }
+    if (normalizedType === 'sqlserver') {
+        return {...base, name: current.name === 'Local MySQL' ? 'SQL Server' : current.name, host: current.host || '127.0.0.1', port: 1433};
+    }
+    if (normalizedType === 'postgres') {
+        return {...base, name: current.name === 'Local MySQL' ? 'Local PostgreSQL' : current.name, host: current.host || '127.0.0.1', port: 5432};
+    }
+    if (normalizedType === 'mongodb') {
+        return {...base, name: current.name === 'Local MySQL' ? 'Local MongoDB' : current.name, host: current.host || '127.0.0.1', port: 27017};
+    }
+    if (normalizedType === 'sqlite') {
+        return {...base, name: current.name === 'Local MySQL' ? 'Local SQLite' : current.name, host: '', port: 0, username: '', password: '', database: ''};
+    }
+    return {...base, name: current.name || 'Local MySQL', host: current.host || '127.0.0.1', port: 3306, username: current.username || 'root'};
+}
+
+function isSqlProfile(profile) {
+    return (profile?.type || 'mysql') !== 'mongodb';
+}
+
+function connectionTarget(profile) {
+    if (!profile) {
+        return '';
+    }
+    if ((profile.type || 'mysql') === 'sqlite') {
+        return profile.filePath || 'SQLite file';
+    }
+    if ((profile.type || 'mysql') === 'mongodb' && profile.connectionString) {
+        return 'MongoDB connection string';
+    }
+    return profile.host || profile.connectionString || profile.filePath || '';
 }
 
 export default App

@@ -1,0 +1,31 @@
+# Actions that require explicit approval and audit evidence.
+governed_channels:
+  email_send:
+    requires:
+      - approval_id
+      - approved_by
+      - approved_at
+      - recipient
+      - evidence_ref
+      - audit_log
+      - failure_path
+
+  social_post:
+    requires:
+      - approval_id
+      - approved_by
+      - approved_at
+      - platform
+      - content_hash
+      - evidence_ref
+      - audit_log
+
+  production_deploy:
+    requires:
+      - change_summary
+      - tests_passed
+      - security_review
+      - rollback_plan
+      - approver
+      - deploy_log
+

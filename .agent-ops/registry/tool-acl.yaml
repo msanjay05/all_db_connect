@@ -1,0 +1,70 @@
+# Public-safe example tool ACL.
+# Keep default access closed. Add tools only when required.
+# The validation CLI fails if an agent requests a tool not granted here.
+orchestrator:
+  tools:
+    - repo_read
+    - task_planning
+
+product-manager:
+  tools:
+    - planning_docs
+
+architecture:
+  tools:
+    - repo_read
+    - architecture_docs
+
+backend-builder:
+  tools:
+    - repo_read
+    - repo_write_backend
+    - run_backend_tests
+
+frontend-builder:
+  tools:
+    - repo_read
+    - repo_write_frontend
+    - run_frontend_tests
+
+data-engineer:
+  tools:
+    - repo_read
+    - data_profile_read
+    - pipeline_docs
+
+security-reviewer:
+  tools:
+    - repo_read
+    - dependency_scan
+    - secret_scan
+
+qa-reviewer:
+  tools:
+    - run_tests
+    - browser_smoke
+    - ci_read
+
+code-reviewer:
+  tools:
+    - repo_read
+    - diff_read
+    - test_read
+
+research-analyst:
+  tools:
+    - web_search
+    - fetch_public_sources
+
+devops-release:
+  tools:
+    - ci_read
+    - deploy_log_read
+    - smoke_test
+
+blocked_tools:
+  - direct_email_send
+  - direct_social_post
+  - read_all_secrets
+  - production_delete
+  - trading_execute

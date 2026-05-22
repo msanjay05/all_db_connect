@@ -1,3 +1,4 @@
+import {memo} from 'react';
 import ResultGrid from './ResultGrid';
 import {formatDuration, resultSummary} from '../utils/results';
 
@@ -6,7 +7,9 @@ function ResultsPanel({
     cancelResultEdits,
     showResultUpdateConfirmation,
     isRunning,
-    activeTab,
+    result,
+    showFilters,
+    columnFilters,
     toggleColumnFilters,
     clearAllColumnFilters,
     sortedResultColumns,
@@ -31,6 +34,8 @@ function ResultsPanel({
     resultPageCount,
     exportCsv,
 }) {
+    const hasColumnFilters = Object.values(columnFilters || {}).some((value) => String(value || '').trim());
+
     return (
         <section className="results-panel">
             <div className="results-header">
@@ -48,8 +53,8 @@ function ResultsPanel({
                         </div>
                     )}
                     <button
-                        className={activeTab?.showFilters ? 'filter-toggle active' : 'filter-toggle'}
-                        disabled={!activeTab?.result?.columns?.length}
+                        className={showFilters ? 'filter-toggle active' : 'filter-toggle'}
+                        disabled={!result?.columns?.length}
                         onClick={toggleColumnFilters}
                         title="Show column filters"
                     >
@@ -57,7 +62,7 @@ function ResultsPanel({
                     </button>
                     <button
                         className="clear-filters-button"
-                        disabled={!Object.values(activeTab?.columnFilters || {}).some((value) => String(value || '').trim())}
+                        disabled={!hasColumnFilters}
                         onClick={clearAllColumnFilters}
                         title="Clear all filters"
                     >
@@ -65,7 +70,7 @@ function ResultsPanel({
                     </button>
                     <button
                         className="filter-toggle export-button"
-                        disabled={isRunning || !activeTab?.result?.success || !activeTab?.result?.columns?.length}
+                        disabled={isRunning || !result?.success || !result?.columns?.length}
                         onClick={exportCsv}
                         title="Export current loaded results to CSV"
                     >
@@ -77,15 +82,15 @@ function ResultsPanel({
                     </button>
                 </div>
             </div>
-            {activeTab?.result?.error && <div className="error-box">{activeTab.result.error}</div>}
+            {result?.error && <div className="error-box">{result.error}</div>}
             {resultEditError && <div className="error-box">{resultEditError}</div>}
             {resultEditSuccess && <div className="success-box">{resultEditSuccess}</div>}
             <ResultGrid
                 columns={sortedResultColumns}
                 rows={paginatedRows}
                 rowOffset={resultPageStart}
-                showFilters={activeTab?.showFilters}
-                columnFilters={activeTab?.columnFilters || {}}
+                showFilters={showFilters}
+                columnFilters={columnFilters || {}}
                 onFilterChange={updateColumnFilter}
                 onFilterClear={clearColumnFilter}
                 onCopyText={copyText}
@@ -96,7 +101,7 @@ function ResultsPanel({
                 primaryKeyNames={resultPrimaryKeyNames}
                 onCellUpdate={requestCellUpdate}
             />
-            {activeTab?.result?.columns?.length > 0 && (
+            {result?.columns?.length > 0 && (
                 <div className="pagination-bar">
                     <span>
                         {filteredRows.length === 0
@@ -114,6 +119,7 @@ function ResultsPanel({
                                 <option value="50">50</option>
                                 <option value="100">100</option>
                                 <option value="250">250</option>
+                                <option value="500">500</option>
                             </select>
                         </label>
                         <button type="button" onClick={() => updateResultPage(1)} disabled={currentResultPage === 1}>
@@ -133,11 +139,11 @@ function ResultsPanel({
                 </div>
             )}
             <div className="result-status">
-                <span>{activeTab?.result ? resultSummary(activeTab.result, paginatedRows.length) : 'No query executed'}</span>
-                <span>{activeTab?.result ? `Duration: ${formatDuration(activeTab.result.durationMs)}` : 'Ready'}</span>
+                <span>{result ? resultSummary(result, paginatedRows.length) : 'No query executed'}</span>
+                <span>{result ? `Duration: ${formatDuration(result.durationMs)}` : 'Ready'}</span>
             </div>
         </section>
     );
 }
 
-export default ResultsPanel;
+export default memo(ResultsPanel);

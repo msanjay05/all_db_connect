@@ -1,0 +1,63 @@
+# Public-safe example. Replace with your own agent IDs.
+# The validation CLI treats this as policy, not documentation.
+orchestrator:
+  can_call:
+    - product-manager
+    - architecture
+    - backend-builder
+    - frontend-builder
+    - data-engineer
+    - security-reviewer
+    - qa-reviewer
+    - code-reviewer
+    - research-analyst
+    - devops-release
+
+product-manager:
+  can_call:
+    - orchestrator
+
+architecture:
+  can_call:
+    - orchestrator
+    - security-reviewer
+
+backend-builder:
+  can_call:
+    - orchestrator
+    - data-engineer
+    - security-reviewer
+
+frontend-builder:
+  can_call:
+    - orchestrator
+    - backend-builder
+    - qa-reviewer
+
+data-engineer:
+  can_call:
+    - orchestrator
+    - backend-builder
+    - security-reviewer
+
+security-reviewer:
+  can_call:
+    - orchestrator
+
+qa-reviewer:
+  can_call:
+    - orchestrator
+
+code-reviewer:
+  can_call:
+    - orchestrator
+
+research-analyst:
+  can_call:
+    - orchestrator
+
+devops-release:
+  can_call:
+    - orchestrator
+    - qa-reviewer
+    - security-reviewer

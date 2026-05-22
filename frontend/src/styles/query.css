@@ -131,3 +131,34 @@
     min-height: 0;
     border-bottom: 1px solid #243244;
 }
+
+@media (max-width: 920px) {
+    .topbar {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: auto auto;
+        gap: 6px;
+        height: auto;
+    }
+
+    .toolbar-actions {
+        justify-self: stretch;
+        min-width: 0;
+        overflow-x: auto;
+        padding-bottom: 2px;
+    }
+
+    .query-tabs {
+        min-height: 28px;
+    }
+}
+
+@media (max-width: 640px) {
+    .query-tab {
+        min-width: 72px;
+        max-width: 112px;
+    }
+
+    .query-limit-select {
+        width: 82px;
+    }
+}

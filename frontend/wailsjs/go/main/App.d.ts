@@ -12,6 +12,8 @@ export function KillQuery():Promise<boolean>;
 
 export function ListConnectionProfiles():Promise<Array<models.ConnectionProfile>>;
 
+export function ListConnectionQueryHistory(arg1:string,arg2:number):Promise<Array<models.QueryHistory>>;
+
 export function ListDatabases(arg1:string):Promise<Array<string>>;
 
 export function ListQueryHistory(arg1:number):Promise<Array<models.QueryHistory>>;

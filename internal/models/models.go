@@ -1,26 +1,46 @@
 package models
 
 type ConnectionProfile struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Host      string `json:"host"`
-	Port      int    `json:"port"`
-	Username  string `json:"username"`
-	Database  string `json:"database"`
-	ReadOnly  bool   `json:"readOnly"`
-	CreatedAt string `json:"createdAt"`
-	UpdatedAt string `json:"updatedAt"`
+	ID               string `json:"id"`
+	Type             string `json:"type"`
+	Name             string `json:"name"`
+	Host             string `json:"host"`
+	Port             int    `json:"port"`
+	Username         string `json:"username"`
+	Database         string `json:"database"`
+	ConnectionString string `json:"connectionString"`
+	FilePath         string `json:"filePath"`
+	Account          string `json:"account"`
+	ProjectID        string `json:"projectId"`
+	Region           string `json:"region"`
+	Warehouse        string `json:"warehouse"`
+	Role             string `json:"role"`
+	AuthType         string `json:"authType"`
+	ExtraParams      string `json:"extraParams"`
+	ReadOnly         bool   `json:"readOnly"`
+	CreatedAt        string `json:"createdAt"`
+	UpdatedAt        string `json:"updatedAt"`
 }
 
 type ConnectionProfileInput struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Host     string `json:"host"`
-	Port     int    `json:"port"`
-	Username string `json:"username"`
-	Password string `json:"password"`
-	Database string `json:"database"`
-	ReadOnly bool   `json:"readOnly"`
+	ID               string `json:"id"`
+	Type             string `json:"type"`
+	Name             string `json:"name"`
+	Host             string `json:"host"`
+	Port             int    `json:"port"`
+	Username         string `json:"username"`
+	Password         string `json:"password"`
+	Database         string `json:"database"`
+	ConnectionString string `json:"connectionString"`
+	FilePath         string `json:"filePath"`
+	Account          string `json:"account"`
+	ProjectID        string `json:"projectId"`
+	Region           string `json:"region"`
+	Warehouse        string `json:"warehouse"`
+	Role             string `json:"role"`
+	AuthType         string `json:"authType"`
+	ExtraParams      string `json:"extraParams"`
+	ReadOnly         bool   `json:"readOnly"`
 }
 
 type ConnectionTestResult struct {

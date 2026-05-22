@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -14,16 +13,10 @@ import (
 	"my-wails-app/internal/models"
 )
 
-type Service struct{}
+type mysqlProvider struct{}
 
-var limitClausePattern = regexp.MustCompile(`(?is)\blimit\s+\d+`)
-
-func NewService() *Service {
-	return &Service{}
-}
-
-func (s *Service) TestConnection(ctx context.Context, profile models.ConnectionProfile, password string) error {
-	conn, err := open(profile, password)
+func (p mysqlProvider) TestConnection(ctx context.Context, profile models.ConnectionProfile, password string) error {
+	conn, err := openMySQL(profile, password)
 	if err != nil {
 		return err
 	}
@@ -34,71 +27,27 @@ func (s *Service) TestConnection(ctx context.Context, profile models.ConnectionP
 	return conn.PingContext(pingCtx)
 }
 
-func (s *Service) Execute(ctx context.Context, profile models.ConnectionProfile, password string, databaseName string, sqlText string, limit int, onConnectionID func(int64)) (models.QueryResult, error) {
-	sqlText = strings.TrimSpace(sqlText)
-	if sqlText == "" {
-		return models.QueryResult{}, fmt.Errorf("query is empty")
-	}
-
-	profile.Database = strings.TrimSpace(databaseName)
-	if profile.Database == "" {
-		return models.QueryResult{}, fmt.Errorf("select a database before running a query")
-	}
-
-	db, err := open(profile, password)
+func (p mysqlProvider) Execute(ctx context.Context, profile models.ConnectionProfile, password string, databaseName string, queryText string, limit int, onConnectionID func(int64)) (models.QueryResult, error) {
+	databaseName, err := requireDatabase(databaseName)
 	if err != nil {
 		return models.QueryResult{}, err
 	}
-	defer db.Close()
-
-	queryCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cancel()
-
-	conn, err := db.Conn(queryCtx)
+	profile.Database = databaseName
+	conn, err := openMySQL(profile, password)
 	if err != nil {
 		return models.QueryResult{}, err
 	}
 	defer conn.Close()
-
-	var connectionID int64
-	if err := conn.QueryRowContext(queryCtx, `SELECT CONNECTION_ID()`).Scan(&connectionID); err != nil {
-		return models.QueryResult{}, fmt.Errorf("read connection id: %w", err)
-	}
-	if onConnectionID != nil {
-		onConnectionID(connectionID)
-	}
-
-	start := time.Now()
-	if returnsRows(sqlText) {
-		sqlText = applyDefaultLimit(sqlText, limit)
-		result, err := runQuery(queryCtx, conn, sqlText)
-		result.DurationMS = time.Since(start).Milliseconds()
-		return result, err
-	}
-
-	execResult, err := conn.ExecContext(queryCtx, sqlText)
-	duration := time.Since(start).Milliseconds()
-	if err != nil {
-		return models.QueryResult{DurationMS: duration, Success: false, Error: err.Error()}, err
-	}
-
-	rowsAffected, _ := execResult.RowsAffected()
-	return models.QueryResult{
-		Rows:         []map[string]interface{}{},
-		Columns:      []models.QueryColumn{},
-		RowsAffected: rowsAffected,
-		DurationMS:   duration,
-		Success:      true,
-	}, nil
+	return executeSQL(ctx, conn, queryText, limit, `SELECT CONNECTION_ID()`, onConnectionID)
 }
 
-func (s *Service) KillQuery(ctx context.Context, profile models.ConnectionProfile, password string, databaseName string, connectionID int64) error {
+func (p mysqlProvider) KillQuery(ctx context.Context, profile models.ConnectionProfile, password string, databaseName string, connectionID int64) error {
 	if connectionID <= 0 {
 		return fmt.Errorf("mysql connection id is not available")
 	}
 
 	profile.Database = strings.TrimSpace(databaseName)
-	db, err := open(profile, password)
+	db, err := openMySQL(profile, password)
 	if err != nil {
 		return err
 	}
@@ -113,34 +62,8 @@ func (s *Service) KillQuery(ctx context.Context, profile models.ConnectionProfil
 	return nil
 }
 
-func applyDefaultLimit(sqlText string, limit int) string {
-	if limit < 0 {
-		return sqlText
-	}
-	if limit <= 0 {
-		limit = 100
-	}
-	if !canApplyLimit(sqlText) || limitClausePattern.MatchString(sqlText) {
-		return sqlText
-	}
-	return strings.TrimRight(strings.TrimSpace(sqlText), ";") + " LIMIT " + strconv.Itoa(limit)
-}
-
-func canApplyLimit(sqlText string) bool {
-	fields := strings.Fields(strings.TrimSpace(strings.TrimLeft(sqlText, "(")))
-	if len(fields) == 0 {
-		return false
-	}
-	switch strings.ToUpper(fields[0]) {
-	case "SELECT", "WITH":
-		return true
-	default:
-		return false
-	}
-}
-
-func (s *Service) ListDatabases(ctx context.Context, profile models.ConnectionProfile, password string) ([]string, error) {
-	conn, err := open(profile, password)
+func (p mysqlProvider) ListDatabases(ctx context.Context, profile models.ConnectionProfile, password string) ([]string, error) {
+	conn, err := openMySQL(profile, password)
 	if err != nil {
 		return nil, err
 	}
@@ -166,9 +89,9 @@ func (s *Service) ListDatabases(ctx context.Context, profile models.ConnectionPr
 	return databases, rows.Err()
 }
 
-func (s *Service) Schema(ctx context.Context, profile models.ConnectionProfile, password string, databaseName string) (models.SchemaInfo, error) {
+func (p mysqlProvider) Schema(ctx context.Context, profile models.ConnectionProfile, password string, databaseName string) (models.SchemaInfo, error) {
 	profile.Database = strings.TrimSpace(databaseName)
-	conn, err := open(profile, password)
+	conn, err := openMySQL(profile, password)
 	if err != nil {
 		return models.SchemaInfo{}, err
 	}
@@ -281,7 +204,7 @@ func (s *Service) Schema(ctx context.Context, profile models.ConnectionProfile, 
 	return schema, nil
 }
 
-func open(profile models.ConnectionProfile, password string) (*sql.DB, error) {
+func openMySQL(profile models.ConnectionProfile, password string) (*sql.DB, error) {
 	port := profile.Port
 	if port == 0 {
 		port = 3306
@@ -310,88 +233,4 @@ func open(profile models.ConnectionProfile, password string) (*sql.DB, error) {
 	conn.SetMaxIdleConns(1)
 	conn.SetConnMaxLifetime(10 * time.Minute)
 	return conn, nil
-}
-
-func runQuery(ctx context.Context, conn *sql.Conn, sqlText string) (models.QueryResult, error) {
-	rows, err := conn.QueryContext(ctx, sqlText)
-	if err != nil {
-		return models.QueryResult{Success: false, Error: err.Error()}, err
-	}
-	defer rows.Close()
-
-	columnNames, err := rows.Columns()
-	if err != nil {
-		return models.QueryResult{Success: false, Error: err.Error()}, err
-	}
-
-	columnTypes, _ := rows.ColumnTypes()
-	columns := make([]models.QueryColumn, len(columnNames))
-	for i, name := range columnNames {
-		columns[i] = models.QueryColumn{Name: name}
-		if i < len(columnTypes) {
-			columns[i].Type = columnTypes[i].DatabaseTypeName()
-		}
-	}
-
-	var resultRows []map[string]interface{}
-	for rows.Next() {
-		values := make([]interface{}, len(columnNames))
-		scanTargets := make([]interface{}, len(columnNames))
-		for i := range values {
-			scanTargets[i] = &values[i]
-		}
-
-		if err := rows.Scan(scanTargets...); err != nil {
-			return models.QueryResult{Columns: columns, Rows: resultRows, Success: false, Error: err.Error()}, err
-		}
-
-		row := make(map[string]interface{}, len(columnNames))
-		for i, name := range columnNames {
-			row[name] = normalizeValue(values[i], columns[i].Type)
-		}
-		resultRows = append(resultRows, row)
-	}
-	if err := rows.Err(); err != nil {
-		return models.QueryResult{Columns: columns, Rows: resultRows, Success: false, Error: err.Error()}, err
-	}
-
-	return models.QueryResult{
-		Columns:      columns,
-		Rows:         resultRows,
-		RowsAffected: int64(len(resultRows)),
-		Success:      true,
-	}, nil
-}
-
-func normalizeValue(value interface{}, columnType string) interface{} {
-	switch typed := value.(type) {
-	case nil:
-		return nil
-	case []byte:
-		if strings.EqualFold(columnType, "BIT") && len(typed) == 1 {
-			if typed[0] == 0 {
-				return 0
-			}
-			return 1
-		}
-		return string(typed)
-	case time.Time:
-		return typed.Format(time.RFC3339)
-	default:
-		return typed
-	}
-}
-
-func returnsRows(sqlText string) bool {
-	fields := strings.Fields(strings.TrimSpace(strings.TrimLeft(sqlText, "(")))
-	if len(fields) == 0 {
-		return false
-	}
-
-	switch strings.ToUpper(fields[0]) {
-	case "SELECT", "SHOW", "DESCRIBE", "DESC", "EXPLAIN", "WITH":
-		return true
-	default:
-		return false
-	}
 }

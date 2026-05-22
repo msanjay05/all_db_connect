@@ -26,11 +26,21 @@ export namespace models {
 	}
 	export class ConnectionProfile {
 	    id: string;
+	    type: string;
 	    name: string;
 	    host: string;
 	    port: number;
 	    username: string;
 	    database: string;
+	    connectionString: string;
+	    filePath: string;
+	    account: string;
+	    projectId: string;
+	    region: string;
+	    warehouse: string;
+	    role: string;
+	    authType: string;
+	    extraParams: string;
 	    readOnly: boolean;
 	    createdAt: string;
 	    updatedAt: string;
@@ -42,11 +52,21 @@ export namespace models {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
+	        this.type = source["type"];
 	        this.name = source["name"];
 	        this.host = source["host"];
 	        this.port = source["port"];
 	        this.username = source["username"];
 	        this.database = source["database"];
+	        this.connectionString = source["connectionString"];
+	        this.filePath = source["filePath"];
+	        this.account = source["account"];
+	        this.projectId = source["projectId"];
+	        this.region = source["region"];
+	        this.warehouse = source["warehouse"];
+	        this.role = source["role"];
+	        this.authType = source["authType"];
+	        this.extraParams = source["extraParams"];
 	        this.readOnly = source["readOnly"];
 	        this.createdAt = source["createdAt"];
 	        this.updatedAt = source["updatedAt"];
@@ -54,12 +74,22 @@ export namespace models {
 	}
 	export class ConnectionProfileInput {
 	    id: string;
+	    type: string;
 	    name: string;
 	    host: string;
 	    port: number;
 	    username: string;
 	    password: string;
 	    database: string;
+	    connectionString: string;
+	    filePath: string;
+	    account: string;
+	    projectId: string;
+	    region: string;
+	    warehouse: string;
+	    role: string;
+	    authType: string;
+	    extraParams: string;
 	    readOnly: boolean;
 	
 	    static createFrom(source: any = {}) {
@@ -69,12 +99,22 @@ export namespace models {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
+	        this.type = source["type"];
 	        this.name = source["name"];
 	        this.host = source["host"];
 	        this.port = source["port"];
 	        this.username = source["username"];
 	        this.password = source["password"];
 	        this.database = source["database"];
+	        this.connectionString = source["connectionString"];
+	        this.filePath = source["filePath"];
+	        this.account = source["account"];
+	        this.projectId = source["projectId"];
+	        this.region = source["region"];
+	        this.warehouse = source["warehouse"];
+	        this.role = source["role"];
+	        this.authType = source["authType"];
+	        this.extraParams = source["extraParams"];
 	        this.readOnly = source["readOnly"];
 	    }
 	}

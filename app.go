@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,7 +24,7 @@ type App struct {
 	ctx     context.Context
 	store   *store.Store
 	secure  *secure.Keyring
-	mysql   *workbenchdb.Service
+	db      *workbenchdb.Service
 	initErr error
 
 	queryMu     sync.Mutex
@@ -42,7 +43,7 @@ type activeQueryState struct {
 func NewApp() *App {
 	return &App{
 		secure: secure.NewKeyring(),
-		mysql:  workbenchdb.NewService(),
+		db:     workbenchdb.NewService(),
 	}
 }
 
@@ -93,7 +94,9 @@ func (a *App) SaveConnectionProfile(input models.ConnectionProfileInput) (models
 			return models.ConnectionProfile{}, err
 		}
 	}
-	normalized.Database = existingDatabase
+	if normalized.Database == "" {
+		normalized.Database = existingDatabase
+	}
 
 	return a.store.UpsertProfile(normalized, time.Now())
 }
@@ -136,7 +139,7 @@ func (a *App) TestConnection(input models.ConnectionProfileInput) (models.Connec
 		return models.ConnectionTestResult{}, err
 	}
 
-	if err := a.mysql.TestConnection(a.ctx, profile, password); err != nil {
+	if err := a.db.TestConnection(a.ctx, profile, password); err != nil {
 		return models.ConnectionTestResult{OK: false, Message: err.Error()}, nil
 	}
 	return models.ConnectionTestResult{OK: true, Message: "Connection successful"}, nil
@@ -158,17 +161,17 @@ func (a *App) ExecuteQuery(request models.QueryRequest) (models.QueryResult, err
 	if err != nil {
 		return models.QueryResult{}, err
 	}
-	if profile.ReadOnly && !isDQLOnly(request.SQL) {
+	if profile.ReadOnly && !isReadOnlyAllowed(profile.Type, request.SQL) {
 		return models.QueryResult{
 			Rows:    []map[string]interface{}{},
 			Columns: []models.QueryColumn{},
 			Success: false,
-			Error:   "Read-only connection only allows DQL queries such as SELECT, SHOW, DESCRIBE, and EXPLAIN",
+			Error:   readOnlyErrorMessage(profile.Type),
 		}, nil
 	}
 
 	selectedDatabase := strings.TrimSpace(request.Database)
-	if selectedDatabase == "" {
+	if selectedDatabase == "" && workbenchdb.NormalizeType(profile.Type) != workbenchdb.TypeSQLite {
 		return models.QueryResult{}, fmt.Errorf("database is required")
 	}
 
@@ -176,7 +179,7 @@ func (a *App) ExecuteQuery(request models.QueryRequest) (models.QueryResult, err
 	a.setActiveQuery(cancel, profile, password, selectedDatabase)
 	defer a.clearQueryCancel()
 
-	result, execErr := a.mysql.Execute(queryCtx, profile, password, selectedDatabase, request.SQL, request.Limit, a.setActiveQueryConnectionID)
+	result, execErr := a.db.Execute(queryCtx, profile, password, selectedDatabase, request.SQL, request.Limit, a.setActiveQueryConnectionID)
 	if execErr != nil {
 		result.Success = false
 		result.Error = execErr.Error()
@@ -220,7 +223,7 @@ func (a *App) KillQuery() (bool, error) {
 		active.cancel()
 		return true, nil
 	}
-	if err := a.mysql.KillQuery(a.ctx, profile, password, database, connectionID); err != nil {
+	if err := a.db.KillQuery(a.ctx, profile, password, database, connectionID); err != nil {
 		active.cancel()
 		return true, err
 	}
@@ -242,7 +245,7 @@ func (a *App) ListDatabases(connectionID string) ([]string, error) {
 		return nil, err
 	}
 
-	return a.mysql.ListDatabases(a.ctx, profile, password)
+	return a.db.ListDatabases(a.ctx, profile, password)
 }
 
 func (a *App) GetSchema(request models.SchemaRequest) (models.SchemaInfo, error) {
@@ -265,7 +268,7 @@ func (a *App) GetSchema(request models.SchemaRequest) (models.SchemaInfo, error)
 		return models.SchemaInfo{}, err
 	}
 
-	schema, err := a.mysql.Schema(a.ctx, profile, password, request.Database)
+	schema, err := a.db.Schema(a.ctx, profile, password, request.Database)
 	if err != nil {
 		return models.SchemaInfo{}, err
 	}
@@ -278,6 +281,17 @@ func (a *App) ListQueryHistory(limit int) ([]models.QueryHistory, error) {
 		return nil, err
 	}
 	return a.store.ListHistory(limit)
+}
+
+func (a *App) ListConnectionQueryHistory(connectionID string, limit int) ([]models.QueryHistory, error) {
+	if err := a.ready(); err != nil {
+		return nil, err
+	}
+	connectionID = strings.TrimSpace(connectionID)
+	if connectionID == "" {
+		return []models.QueryHistory{}, nil
+	}
+	return a.store.ListHistoryForConnection(connectionID, limit)
 }
 
 func (a *App) SaveCSVFile(defaultFilename string, content string) (string, error) {
@@ -347,32 +361,42 @@ func (a *App) clearQueryCancel() {
 }
 
 func (a *App) profileAndPassword(input models.ConnectionProfileInput) (models.ConnectionProfile, string, error) {
-	if strings.TrimSpace(input.ID) != "" && strings.TrimSpace(input.Password) == "" {
-		profile, err := a.store.GetProfile(input.ID)
-		if err != nil {
-			return models.ConnectionProfile{}, "", fmt.Errorf("load profile: %w", err)
-		}
-		password, err := a.secure.GetPassword(input.ID)
-		return profile, password, err
-	}
-
 	normalized, err := normalizeProfileInput(input)
 	if err != nil {
 		return models.ConnectionProfile{}, "", err
 	}
+	password := normalized.Password
+	if strings.TrimSpace(normalized.ID) != "" && strings.TrimSpace(password) == "" {
+		storedPassword, err := a.secure.GetPassword(normalized.ID)
+		if err != nil {
+			return models.ConnectionProfile{}, "", err
+		}
+		password = storedPassword
+	}
 	return models.ConnectionProfile{
-		ID:       normalized.ID,
-		Name:     normalized.Name,
-		Host:     normalized.Host,
-		Port:     normalized.Port,
-		Username: normalized.Username,
-		Database: normalized.Database,
-		ReadOnly: normalized.ReadOnly,
-	}, normalized.Password, nil
+		ID:               normalized.ID,
+		Type:             normalized.Type,
+		Name:             normalized.Name,
+		Host:             normalized.Host,
+		Port:             normalized.Port,
+		Username:         normalized.Username,
+		Database:         normalized.Database,
+		ConnectionString: normalized.ConnectionString,
+		FilePath:         normalized.FilePath,
+		Account:          normalized.Account,
+		ProjectID:        normalized.ProjectID,
+		Region:           normalized.Region,
+		Warehouse:        normalized.Warehouse,
+		Role:             normalized.Role,
+		AuthType:         normalized.AuthType,
+		ExtraParams:      normalized.ExtraParams,
+		ReadOnly:         normalized.ReadOnly,
+	}, password, nil
 }
 
 func normalizeProfileInput(input models.ConnectionProfileInput) (models.ConnectionProfileInput, error) {
 	input.ID = strings.TrimSpace(input.ID)
+	input.Type = workbenchdb.NormalizeType(input.Type)
 	if input.ID == "" {
 		input.ID = uuid.NewString()
 	}
@@ -380,23 +404,145 @@ func normalizeProfileInput(input models.ConnectionProfileInput) (models.Connecti
 	input.Host = strings.TrimSpace(input.Host)
 	input.Username = strings.TrimSpace(input.Username)
 	input.Database = strings.TrimSpace(input.Database)
+	input.ConnectionString = strings.TrimSpace(input.ConnectionString)
+	input.FilePath = strings.TrimSpace(input.FilePath)
+	input.Account = strings.TrimSpace(input.Account)
+	input.ProjectID = strings.TrimSpace(input.ProjectID)
+	input.Region = strings.TrimSpace(input.Region)
+	input.Warehouse = strings.TrimSpace(input.Warehouse)
+	input.Role = strings.TrimSpace(input.Role)
+	input.AuthType = strings.TrimSpace(input.AuthType)
+	input.ExtraParams = strings.TrimSpace(input.ExtraParams)
 
 	if input.Name == "" {
-		input.Name = input.Host
+		switch input.Type {
+		case workbenchdb.TypeSQLite:
+			input.Name = filepath.Base(input.FilePath)
+		case workbenchdb.TypeMongoDB:
+			input.Name = input.Host
+			if input.Name == "" && input.ConnectionString != "" {
+				input.Name = "MongoDB"
+			}
+		case workbenchdb.TypeBigQuery:
+			input.Name = firstNonEmpty(input.ProjectID, "BigQuery")
+		case workbenchdb.TypeSnowflake:
+			input.Name = firstNonEmpty(input.Account, "Snowflake")
+		default:
+			input.Name = firstNonEmpty(input.Host, input.ConnectionString, input.Type)
+		}
 	}
-	if input.Host == "" {
-		return models.ConnectionProfileInput{}, fmt.Errorf("host is required")
-	}
-	if input.Port == 0 {
-		input.Port = 3306
-	}
-	if input.Port < 1 || input.Port > 65535 {
-		return models.ConnectionProfileInput{}, fmt.Errorf("port must be between 1 and 65535")
-	}
-	if input.Username == "" {
-		return models.ConnectionProfileInput{}, fmt.Errorf("username is required")
+
+	switch input.Type {
+	case workbenchdb.TypeMySQL, workbenchdb.TypePostgres, workbenchdb.TypeRedshift, workbenchdb.TypeClickHouse, workbenchdb.TypePresto, workbenchdb.TypeStarburst, workbenchdb.TypeSQLServer:
+		if input.Host == "" && input.ConnectionString == "" {
+			return models.ConnectionProfileInput{}, fmt.Errorf("host is required")
+		}
+		if input.Port == 0 {
+			switch input.Type {
+			case workbenchdb.TypePostgres:
+				input.Port = 5432
+			case workbenchdb.TypeRedshift:
+				input.Port = 5439
+			case workbenchdb.TypeClickHouse:
+				input.Port = 9000
+			case workbenchdb.TypePresto, workbenchdb.TypeStarburst:
+				input.Port = 8080
+			case workbenchdb.TypeSQLServer:
+				input.Port = 1433
+			default:
+				input.Port = 3306
+			}
+		}
+		if input.Port < 1 || input.Port > 65535 {
+			return models.ConnectionProfileInput{}, fmt.Errorf("port must be between 1 and 65535")
+		}
+		if input.Username == "" && input.ConnectionString == "" {
+			return models.ConnectionProfileInput{}, fmt.Errorf("username is required")
+		}
+	case workbenchdb.TypeMongoDB:
+		if input.ConnectionString == "" && input.Host == "" {
+			input.Host = "localhost"
+		}
+		if input.Port == 0 && input.ConnectionString == "" {
+			input.Port = 27017
+		}
+		if input.Port < 0 || input.Port > 65535 {
+			return models.ConnectionProfileInput{}, fmt.Errorf("port must be between 1 and 65535")
+		}
+	case workbenchdb.TypeSQLite:
+		if input.FilePath == "" {
+			return models.ConnectionProfileInput{}, fmt.Errorf("sqlite file path is required")
+		}
+		input.Host = ""
+		input.Port = 0
+		input.Username = ""
+		input.Password = ""
+	case workbenchdb.TypeBigQuery:
+		if input.ProjectID == "" && input.Database == "" {
+			return models.ConnectionProfileInput{}, fmt.Errorf("bigquery project id is required")
+		}
+	case workbenchdb.TypeAthena:
+		if input.Region == "" {
+			input.Region = "us-east-1"
+		}
+	case workbenchdb.TypeSnowflake:
+		if input.ConnectionString == "" && (input.Account == "" || input.Username == "") {
+			return models.ConnectionProfileInput{}, fmt.Errorf("snowflake account and username are required")
+		}
+	case workbenchdb.TypeDatabricks, workbenchdb.TypeDruid, workbenchdb.TypeDruidJDBC, workbenchdb.TypeSparkSQL:
+		if input.Host == "" && input.ConnectionString == "" {
+			return models.ConnectionProfileInput{}, fmt.Errorf("host or connection string is required")
+		}
+	default:
+		return models.ConnectionProfileInput{}, fmt.Errorf("unsupported database type %q", input.Type)
 	}
 	return input, nil
+}
+
+func isReadOnlyAllowed(profileType string, queryText string) bool {
+	if workbenchdb.NormalizeType(profileType) == workbenchdb.TypeMongoDB {
+		return isMongoReadOnlyCommand(queryText)
+	}
+	return isDQLOnly(queryText)
+}
+
+func readOnlyErrorMessage(profileType string) string {
+	if workbenchdb.NormalizeType(profileType) == workbenchdb.TypeMongoDB {
+		return "Read-only MongoDB connections only allow read commands such as find, aggregate, count, distinct, listCollections, and listIndexes"
+	}
+	return "Read-only connection only allows DQL queries such as SELECT, SHOW, DESCRIBE, and EXPLAIN"
+}
+
+func isMongoReadOnlyCommand(queryText string) bool {
+	var command map[string]interface{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(queryText)), &command); err != nil {
+		return false
+	}
+	if len(command) == 0 {
+		return false
+	}
+	readCommands := map[string]bool{
+		"aggregate":       true,
+		"count":           true,
+		"distinct":        true,
+		"find":            true,
+		"listcollections": true,
+		"listdatabases":   true,
+		"listindexes":     true,
+	}
+	for key := range command {
+		return readCommands[strings.ToLower(key)]
+	}
+	return false
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func isDQLOnly(sqlText string) bool {

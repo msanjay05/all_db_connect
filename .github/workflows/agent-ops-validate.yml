@@ -1,0 +1,23 @@
+name: agent-contract-tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  agent-contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate agent contracts
+        uses: RPSingh1990/agent-contract-tests@v0.1.0
+        with:
+          root: "."
+          strict: "true"
+          run-evals: "true"
+          eval-dir: ".agent-ops/evals"

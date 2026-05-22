@@ -22,6 +22,10 @@ export function ListConnectionProfiles() {
   return window['go']['main']['App']['ListConnectionProfiles']();
 }
 
+export function ListConnectionQueryHistory(arg1, arg2) {
+  return window['go']['main']['App']['ListConnectionQueryHistory'](arg1, arg2);
+}
+
 export function ListDatabases(arg1) {
   return window['go']['main']['App']['ListDatabases'](arg1);
 }

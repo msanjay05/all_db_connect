@@ -46,11 +46,21 @@ func (s *Store) migrate() error {
 	statements := []string{
 		`CREATE TABLE IF NOT EXISTS connection_profiles (
 			id TEXT PRIMARY KEY,
+			type TEXT NOT NULL DEFAULT 'mysql',
 			name TEXT NOT NULL,
 			host TEXT NOT NULL,
 			port INTEGER NOT NULL,
 			username TEXT NOT NULL,
 			database_name TEXT NOT NULL DEFAULT '',
+			connection_string TEXT NOT NULL DEFAULT '',
+			file_path TEXT NOT NULL DEFAULT '',
+			account TEXT NOT NULL DEFAULT '',
+			project_id TEXT NOT NULL DEFAULT '',
+			region TEXT NOT NULL DEFAULT '',
+			warehouse TEXT NOT NULL DEFAULT '',
+			role TEXT NOT NULL DEFAULT '',
+			auth_type TEXT NOT NULL DEFAULT '',
+			extra_params TEXT NOT NULL DEFAULT '',
 			read_only INTEGER NOT NULL DEFAULT 0,
 			created_at TEXT NOT NULL,
 			updated_at TEXT NOT NULL
@@ -81,6 +91,36 @@ func (s *Store) migrate() error {
 		}
 	}
 	if err := s.ensureColumn("connection_profiles", "read_only", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("connection_profiles", "type", "TEXT NOT NULL DEFAULT 'mysql'"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("connection_profiles", "connection_string", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("connection_profiles", "file_path", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("connection_profiles", "account", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("connection_profiles", "project_id", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("connection_profiles", "region", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("connection_profiles", "warehouse", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("connection_profiles", "role", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("connection_profiles", "auth_type", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("connection_profiles", "extra_params", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	return nil
@@ -127,22 +167,42 @@ func (s *Store) UpsertProfile(input models.ConnectionProfileInput, now time.Time
 
 	updatedAt := now.UTC().Format(time.RFC3339)
 	_, err = s.db.Exec(
-		`INSERT INTO connection_profiles (id, name, host, port, username, database_name, read_only, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO connection_profiles (id, type, name, host, port, username, database_name, connection_string, file_path, account, project_id, region, warehouse, role, auth_type, extra_params, read_only, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(id) DO UPDATE SET
+			type = excluded.type,
 			name = excluded.name,
 			host = excluded.host,
 			port = excluded.port,
 			username = excluded.username,
 			database_name = excluded.database_name,
+			connection_string = excluded.connection_string,
+			file_path = excluded.file_path,
+			account = excluded.account,
+			project_id = excluded.project_id,
+			region = excluded.region,
+			warehouse = excluded.warehouse,
+			role = excluded.role,
+			auth_type = excluded.auth_type,
+			extra_params = excluded.extra_params,
 			read_only = excluded.read_only,
 			updated_at = excluded.updated_at`,
 		input.ID,
+		input.Type,
 		input.Name,
 		input.Host,
 		input.Port,
 		input.Username,
 		input.Database,
+		input.ConnectionString,
+		input.FilePath,
+		input.Account,
+		input.ProjectID,
+		input.Region,
+		input.Warehouse,
+		input.Role,
+		input.AuthType,
+		input.ExtraParams,
 		boolToInt(input.ReadOnly),
 		createdAt,
 		updatedAt,
@@ -152,20 +212,30 @@ func (s *Store) UpsertProfile(input models.ConnectionProfileInput, now time.Time
 	}
 
 	return models.ConnectionProfile{
-		ID:        input.ID,
-		Name:      input.Name,
-		Host:      input.Host,
-		Port:      input.Port,
-		Username:  input.Username,
-		Database:  input.Database,
-		ReadOnly:  input.ReadOnly,
-		CreatedAt: createdAt,
-		UpdatedAt: updatedAt,
+		ID:               input.ID,
+		Type:             input.Type,
+		Name:             input.Name,
+		Host:             input.Host,
+		Port:             input.Port,
+		Username:         input.Username,
+		Database:         input.Database,
+		ConnectionString: input.ConnectionString,
+		FilePath:         input.FilePath,
+		Account:          input.Account,
+		ProjectID:        input.ProjectID,
+		Region:           input.Region,
+		Warehouse:        input.Warehouse,
+		Role:             input.Role,
+		AuthType:         input.AuthType,
+		ExtraParams:      input.ExtraParams,
+		ReadOnly:         input.ReadOnly,
+		CreatedAt:        createdAt,
+		UpdatedAt:        updatedAt,
 	}, nil
 }
 
 func (s *Store) ListProfiles() ([]models.ConnectionProfile, error) {
-	rows, err := s.db.Query(`SELECT id, name, host, port, username, database_name, read_only, created_at, updated_at FROM connection_profiles ORDER BY name`)
+	rows, err := s.db.Query(`SELECT id, type, name, host, port, username, database_name, connection_string, file_path, account, project_id, region, warehouse, role, auth_type, extra_params, read_only, created_at, updated_at FROM connection_profiles ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("list profiles: %w", err)
 	}
@@ -175,8 +245,11 @@ func (s *Store) ListProfiles() ([]models.ConnectionProfile, error) {
 	for rows.Next() {
 		var profile models.ConnectionProfile
 		var readOnly int
-		if err := rows.Scan(&profile.ID, &profile.Name, &profile.Host, &profile.Port, &profile.Username, &profile.Database, &readOnly, &profile.CreatedAt, &profile.UpdatedAt); err != nil {
+		if err := rows.Scan(&profile.ID, &profile.Type, &profile.Name, &profile.Host, &profile.Port, &profile.Username, &profile.Database, &profile.ConnectionString, &profile.FilePath, &profile.Account, &profile.ProjectID, &profile.Region, &profile.Warehouse, &profile.Role, &profile.AuthType, &profile.ExtraParams, &readOnly, &profile.CreatedAt, &profile.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan profile: %w", err)
+		}
+		if profile.Type == "" {
+			profile.Type = "mysql"
 		}
 		profile.ReadOnly = readOnly == 1
 		profiles = append(profiles, profile)
@@ -188,11 +261,14 @@ func (s *Store) GetProfile(id string) (models.ConnectionProfile, error) {
 	var profile models.ConnectionProfile
 	var readOnly int
 	err := s.db.QueryRow(
-		`SELECT id, name, host, port, username, database_name, read_only, created_at, updated_at FROM connection_profiles WHERE id = ?`,
+		`SELECT id, type, name, host, port, username, database_name, connection_string, file_path, account, project_id, region, warehouse, role, auth_type, extra_params, read_only, created_at, updated_at FROM connection_profiles WHERE id = ?`,
 		id,
-	).Scan(&profile.ID, &profile.Name, &profile.Host, &profile.Port, &profile.Username, &profile.Database, &readOnly, &profile.CreatedAt, &profile.UpdatedAt)
+	).Scan(&profile.ID, &profile.Type, &profile.Name, &profile.Host, &profile.Port, &profile.Username, &profile.Database, &profile.ConnectionString, &profile.FilePath, &profile.Account, &profile.ProjectID, &profile.Region, &profile.Warehouse, &profile.Role, &profile.AuthType, &profile.ExtraParams, &readOnly, &profile.CreatedAt, &profile.UpdatedAt)
 	if err != nil {
 		return models.ConnectionProfile{}, err
+	}
+	if profile.Type == "" {
+		profile.Type = "mysql"
 	}
 	profile.ReadOnly = readOnly == 1
 	return profile, nil
@@ -239,16 +315,28 @@ func (s *Store) AddHistory(entry models.QueryHistory) (int64, error) {
 }
 
 func (s *Store) ListHistory(limit int) ([]models.QueryHistory, error) {
+	return s.ListHistoryForConnection("", limit)
+}
+
+func (s *Store) ListHistoryForConnection(connectionID string, limit int) ([]models.QueryHistory, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
+	}
+
+	args := []interface{}{limit}
+	whereClause := ""
+	if connectionID != "" {
+		whereClause = "WHERE connection_id = ?"
+		args = []interface{}{connectionID, limit}
 	}
 
 	rows, err := s.db.Query(
 		`SELECT id, connection_id, database_name, sql_text, duration_ms, row_count, success, error_text, created_at
 		 FROM query_history
+		 `+whereClause+`
 		 ORDER BY datetime(created_at) DESC, id DESC
 		 LIMIT ?`,
-		limit,
+		args...,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list query history: %w", err)

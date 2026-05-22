@@ -191,7 +191,6 @@
 .result-cell-value.editable:hover,
 .result-cell-value.editable:focus {
     background: #1d2a3d;
-    box-shadow: inset 0 0 0 1px #405672;
 }
 
 .result-cell-value.edited {
@@ -424,4 +423,88 @@
     margin: 0;
     padding: 10px 40px 10px 10px;
     white-space: pre-wrap;
+}
+
+.about-dialog {
+    width: min(560px, 100%);
+    border: 1px solid #32455e;
+    border-radius: 12px;
+    background: #121821;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.42);
+    color: #e5edf8;
+    padding: 16px;
+}
+
+.about-dialog p {
+    color: #b7c7dc;
+    font-size: 13px;
+    line-height: 1.5;
+    margin: 0 0 14px;
+}
+
+.about-grid {
+    display: grid;
+    grid-template-columns: 130px minmax(0, 1fr);
+    gap: 10px 14px;
+    margin-bottom: 16px;
+}
+
+.about-grid span {
+    color: #8fa3bd;
+    font-size: 12px;
+    font-weight: 700;
+}
+
+.about-grid strong {
+    color: #e5edf8;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.45;
+}
+
+@media (max-width: 920px) {
+    .results-panel {
+        padding: 10px;
+    }
+
+    .results-header {
+        align-items: flex-start;
+        flex-wrap: wrap;
+    }
+
+    .result-filter-actions {
+        flex-wrap: wrap;
+        justify-content: flex-start;
+    }
+
+    .pagination-bar {
+        align-items: flex-start;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .pagination-controls {
+        justify-content: flex-start;
+    }
+}
+
+@media (max-width: 640px) {
+    .results-header {
+        gap: 8px;
+    }
+
+    .result-edit-actions {
+        flex-wrap: wrap;
+    }
+
+    .table-wrap {
+        border-radius: 8px;
+    }
+
+    .result-table th,
+    .result-table td {
+        min-width: 86px;
+        max-width: 220px;
+        padding: 6px 5px;
+    }
 }

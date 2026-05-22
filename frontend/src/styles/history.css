@@ -1,28 +1,216 @@
-.history-item {
-    grid-template-columns: auto 1fr;
+.history {
+    gap: 0;
+    overflow: hidden;
 }
 
-.history-item code,
-.history-item small {
-    grid-column: 2;
+.history-header {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    min-height: 36px;
+    border-bottom: 1px solid #27272f;
+    background: #10151d;
+    padding: 4px 8px 4px 12px;
+}
+
+.history-header > div {
+    display: grid;
+    gap: 1px;
+    min-width: 0;
+}
+
+.history-header span {
+    color: #f4f4f5;
+    font-size: 13px;
+    font-weight: 800;
+    line-height: 1.1;
+}
+
+.history-header small {
+    color: #71717a;
+    font-size: 11px;
+    font-weight: 600;
+}
+
+.history-close-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 26px;
+    min-width: 28px;
+    border-radius: 7px;
+    padding: 0;
+    color: #c8d7eb;
+    font-size: 18px;
+    line-height: 1;
+}
+
+.history-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    flex: 1 1 auto;
+    height: calc(100vh - 36px);
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: scroll;
+    overscroll-behavior: contain;
+    padding: 10px 8px 14px;
+}
+
+.history-item {
+    display: grid;
+    grid-template-columns: 10px minmax(0, 1fr);
+    align-items: start;
+    gap: 8px;
+    width: 100%;
+    border: 1px solid #27272f;
+    border-radius: 9px;
+    background: #111116;
+    color: #e5edf8;
+    padding: 9px 10px;
+    text-align: left;
+}
+
+.history-item:hover {
+    border-color: #405672;
+    background: #172033;
+}
+
+.history-item-main {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+}
+
+.history-item-summary {
+    display: flex;
+    align-items: start;
+    gap: 8px;
+    justify-content: flex-start;
+    width: 100%;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    padding: 0;
+    text-align: left;
+}
+
+.history-item-summary > span:first-child {
+    display: grid;
+    gap: 4px;
+    flex: 0 1 auto;
+    min-width: 0;
+}
+
+.history-item strong {
+    overflow: hidden;
+    color: #f4f4f5;
+    font-size: 13px;
+    font-weight: 800;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.history-expand-icon {
+    flex: 0 0 auto;
+    margin-top: 1px;
+    color: #71717a;
+    font-size: 14px;
+    line-height: 1;
 }
 
 .history-item code {
     overflow: hidden;
     color: #c8d7eb;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    font-size: 11px;
+    font-weight: 500;
+    line-height: 1.35;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+.history-item.expanded code {
+    display: none;
+}
+
+.history-query-preview {
+    position: relative;
+    margin-top: 6px;
+}
+
+.history-query-preview pre {
+    overflow: auto;
+    max-height: 240px;
+    border: 1px solid #243244;
+    border-radius: 8px;
+    background: #0d1117;
+    color: #dbeafe;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+    font-size: 11px;
+    line-height: 1.45;
+    margin: 0;
+    padding: 10px 40px 10px 10px;
+    white-space: pre-wrap;
+}
+
+.history-copy-button {
+    position: absolute;
+    top: 7px;
+    right: 7px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 24px;
+    border: 1px solid #405672;
+    border-radius: 6px;
+    background: #22314a;
+    color: #dbeafe;
+    padding: 0;
+}
+
+@media (max-width: 920px) {
+    .history-list {
+        height: auto;
+    }
+
+    .history-query-preview pre {
+        max-height: 160px;
+    }
+}
+
+.history-item small {
+    color: #71717a;
+    font-size: 11px;
+    font-weight: 600;
 }
 
 .success-dot,
 .error-dot {
     width: 9px;
     height: 9px;
-    margin-top: 4px;
+    margin-top: 3px;
     border-radius: 50%;
     background: #34d399;
 }
 
 .error-dot {
     background: #fb7185;
+}
+
+.history-empty-state {
+    display: grid;
+    place-items: center;
+    min-height: 140px;
+    border: 1px dashed #30303a;
+    border-radius: 10px;
+    color: #71717a;
+    font-size: 13px;
+    text-align: center;
+    padding: 18px;
 }

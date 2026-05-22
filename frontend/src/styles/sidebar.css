@@ -8,7 +8,7 @@
 
 .active-connection-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 34px 34px 34px;
+    grid-template-columns: minmax(0, 1fr) 34px 34px 34px 34px;
     align-items: start;
     gap: 6px;
 }
@@ -27,9 +27,12 @@
 
 .compact-select-button {
     position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 8px;
     width: 100%;
     min-width: 0;
-    justify-content: space-between;
     border-color: #282832;
     background: #111116;
     color: #d6d6dc;
@@ -37,10 +40,18 @@
     font-weight: 600;
     line-height: 1.2;
     text-align: left;
-    padding-right: 28px;
+    padding: 6px 10px;
 }
 
-.compact-select-button span:first-child {
+.compact-select-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    flex: 0 1 auto;
+    min-width: 0;
+}
+
+.compact-select-label > span:last-child {
     display: block;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -48,10 +59,8 @@
 }
 
 .compact-select-caret {
-    position: absolute;
-    top: 50%;
-    right: 9px;
-    transform: translateY(-50%);
+    flex: 0 0 auto;
+    margin-left: 2px;
     color: #8b8b98;
     font-size: 12px;
     line-height: 1;
@@ -106,14 +115,64 @@
     color: #f4f4f5;
     font-size: 14px;
     font-weight: 700;
-    padding: 6px 28px 6px 10px;
+    padding: 6px 10px;
 }
 
 .database-select .compact-select-button {
     height: 28px;
     border-radius: 6px;
     font-size: 12px;
-    padding: 4px 26px 4px 8px;
+    padding: 4px 8px;
+}
+
+.database-type-select .compact-select-button {
+    height: 50px;
+    border: 1px solid #2f6e9f;
+    border-radius: 5px;
+    background: #061a23;
+    color: #f1f5f9;
+    font-size: 16px;
+    font-weight: 500;
+    padding: 10px 16px;
+}
+
+.database-type-select .compact-select-caret {
+    color: #dbeafe;
+    font-size: 20px;
+}
+
+.database-type-select .compact-select-menu {
+    top: calc(100% + 10px);
+    z-index: 80;
+    max-height: 630px;
+    border: 1px solid #284455;
+    border-radius: 5px;
+    background: #061923;
+    box-shadow: 0 18px 38px rgba(0, 0, 0, 0.42);
+    padding: 16px;
+}
+
+.database-type-select .compact-select-option {
+    min-height: 44px;
+    border-radius: 6px;
+    color: #e5eef6;
+    font-size: 16px;
+    font-weight: 500;
+    padding: 8px 10px;
+}
+
+.database-type-select .compact-select-option.selected {
+    background: #58a6e6;
+    color: #ffffff;
+}
+
+.database-type-select .compact-select-option:hover:not(.selected) {
+    background: rgba(88, 166, 230, 0.14);
+    color: #ffffff;
+}
+
+.database-type-select .compact-select-label {
+    gap: 12px;
 }
 
 .active-connection-meta {
@@ -180,6 +239,31 @@
     color: #a9a9b5;
     font-size: 12px;
     padding: 3px 9px;
+}
+
+.database-type-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    color: var(--db-icon-color);
+    font-size: 9px;
+    font-weight: 800;
+    line-height: 1;
+}
+
+.database-type-icon svg {
+    width: 16px;
+    height: 16px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.7;
+}
+
+.database-type-icon .icon-fill {
+    fill: color-mix(in srgb, var(--db-icon-color) 22%, transparent);
 }
 
 .connection-chip.active {
@@ -316,7 +400,14 @@
 
 .database-panel {
     flex: 0 0 auto;
-    padding: 0 8px 6px;
+    padding: 8px 8px 6px;
+}
+
+.database-action-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(112px, auto) 30px;
+    align-items: center;
+    gap: 6px;
 }
 
 .sidebar-section-title {
@@ -343,6 +434,40 @@
     background: #151519;
     color: #8b8b98;
     padding: 0;
+}
+
+.default-database-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    height: 28px;
+    min-width: 112px;
+    border-color: #3b4a5f;
+    border-radius: 7px;
+    background: #1f2937;
+    color: #cbd5e1;
+    font-size: 12px;
+    padding: 4px 8px;
+    white-space: nowrap;
+}
+
+.default-database-button:not(:disabled):hover {
+    border-color: #f59e0b;
+    color: #fde68a;
+}
+
+.default-database-button.active {
+    border-color: #92400e;
+    background: #3a2712;
+    color: #fbbf24;
+    opacity: 1;
+}
+
+.default-database-icon {
+    color: currentColor;
+    font-size: 12px;
+    line-height: 1;
 }
 
 .schema-tree {
@@ -577,4 +702,86 @@
     font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
     overflow-wrap: anywhere;
     white-space: normal;
+}
+
+@media (max-width: 1200px) {
+    .active-connection-row {
+        grid-template-columns: minmax(0, 1fr) repeat(4, 30px);
+        gap: 4px;
+    }
+
+    .connection-action-button {
+        min-width: 30px;
+        height: 32px;
+    }
+
+    .connection-chips {
+        overflow-x: auto;
+        padding-bottom: 2px;
+    }
+
+    .database-action-row {
+        grid-template-columns: minmax(0, 1fr) 30px;
+    }
+
+    .default-database-button {
+        grid-column: 1 / -1;
+        width: 100%;
+    }
+}
+
+@media (max-width: 920px) {
+    .sidebar {
+        display: grid;
+        grid-template-rows: auto auto minmax(0, 1fr);
+        gap: 0;
+    }
+
+    .sidebar-connection-card {
+        padding-bottom: 8px;
+    }
+
+    .sidebar .form-panel {
+        overflow-y: auto;
+        margin: 8px;
+    }
+
+    .database-panel {
+        padding-top: 6px;
+    }
+
+    .schema-panel {
+        min-height: 0;
+    }
+
+    .schema-tree {
+        padding-bottom: 24px;
+    }
+
+    .sidebar-footer {
+        display: none;
+    }
+}
+
+@media (max-width: 640px) {
+    .active-connection-row {
+        grid-template-columns: minmax(0, 1fr) repeat(4, 28px);
+    }
+
+    .connection-action-button {
+        min-width: 28px;
+        height: 30px;
+    }
+
+    .connection-action-svg {
+        width: 14px;
+        height: 14px;
+    }
+
+    .connection-chip {
+        max-width: 160px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
 }

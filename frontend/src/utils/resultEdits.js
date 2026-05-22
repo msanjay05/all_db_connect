@@ -22,13 +22,13 @@ export function inferEditableTableName(sql) {
     return unquoteIdentifierPath(match[1]);
 }
 
-export function buildUpdateSql(tableName, column, rawValue, rowKey) {
+export function buildUpdateSql(tableName, column, rawValue, rowKey, databaseType = 'mysql') {
     const valueSql = formatEditedValueForSql(rawValue, column);
     const keySql = formatIdValueForSql(rowKey?.value);
     if (!tableName || !column?.name || !rowKey?.name || valueSql === null || keySql === null) {
         return '';
     }
-    return `UPDATE ${quoteIdentifierPath(tableName)} SET ${quoteIdentifier(column.name)} = ${valueSql} WHERE ${quoteIdentifier(rowKey.name)} = ${keySql}`;
+    return `UPDATE ${quoteIdentifierPathForType(tableName, databaseType)} SET ${quoteIdentifierForType(column.name, databaseType)} = ${valueSql} WHERE ${quoteIdentifierForType(rowKey.name, databaseType)} = ${keySql}`;
 }
 
 export function formatEditedValueForSql(rawValue, column) {
@@ -104,6 +104,30 @@ export function formatIdValueForSql(value) {
 
 export function escapeSqlString(value) {
     return String(value).replace(/\\/g, '\\\\').replace(/'/g, "''");
+}
+
+function quoteIdentifierPathForType(identifier, databaseType) {
+    if (usesDoubleQuotedIdentifiers(databaseType)) {
+        return String(identifier || '')
+            .split('.')
+            .map((part) => quoteIdentifierForType(part.trim().replace(/^"|"$/g, ''), databaseType))
+            .join('.');
+    }
+    return quoteIdentifierPath(identifier);
+}
+
+function quoteIdentifierForType(identifier, databaseType) {
+    if (usesDoubleQuotedIdentifiers(databaseType)) {
+        if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(identifier)) {
+            return identifier;
+        }
+        return `"${String(identifier).replaceAll('"', '""')}"`;
+    }
+    return quoteIdentifier(identifier);
+}
+
+function usesDoubleQuotedIdentifiers(databaseType) {
+    return databaseType === 'postgres' || databaseType === 'sqlite';
 }
 
 export function getRowKey(row, primaryKeyNames = new Set()) {
