@@ -2,3 +2,13 @@ build/bin
 node_modules
 frontend/dist
 frontend/node_modules
+
+# Compiled Wails binary
+my-wails-app
+my-wails-app.exe
+
+# macOS
+.DS_Store
+
+# Go build artifacts
+*.test
