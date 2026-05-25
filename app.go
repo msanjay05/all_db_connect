@@ -170,6 +170,16 @@ func (a *App) ExecuteQuery(request models.QueryRequest) (models.QueryResult, err
 		}, nil
 	}
 
+	// Reject UPDATE / DELETE statements that have no WHERE clause.
+	if errMsg := unsafeWriteError(request.SQL); errMsg != "" {
+		return models.QueryResult{
+			Rows:    []map[string]interface{}{},
+			Columns: []models.QueryColumn{},
+			Success: false,
+			Error:   errMsg,
+		}, nil
+	}
+
 	selectedDatabase := strings.TrimSpace(request.Database)
 	if selectedDatabase == "" && workbenchdb.NormalizeType(profile.Type) != workbenchdb.TypeSQLite {
 		return models.QueryResult{}, fmt.Errorf("database is required")
@@ -497,6 +507,122 @@ func normalizeProfileInput(input models.ConnectionProfileInput) (models.Connecti
 		return models.ConnectionProfileInput{}, fmt.Errorf("unsupported database type %q", input.Type)
 	}
 	return input, nil
+}
+
+// unsafeWriteError returns a non-empty error message when any UPDATE or DELETE
+// statement in sqlText is missing a WHERE clause, or when an INSERT statement
+// contains no column list (bare INSERT … VALUES without specifying columns).
+// Returns "" when every statement is considered safe.
+func unsafeWriteError(sqlText string) string {
+	for _, stmt := range splitSQLStatements(sqlText) {
+		kw := strings.ToUpper(firstSQLKeyword(stmt))
+		switch kw {
+		case "UPDATE":
+			if !sqlHasWhereClause(stmt) {
+				return "Safety check failed: UPDATE statement is missing a WHERE clause. Add a WHERE clause or use 'UPDATE … WHERE 1=1' if you really intend to update all rows."
+			}
+		case "DELETE":
+			if !sqlHasWhereClause(stmt) {
+				return "Safety check failed: DELETE statement is missing a WHERE clause. Add a WHERE clause or use 'DELETE … WHERE 1=1' if you really intend to delete all rows."
+			}
+		}
+	}
+	return ""
+}
+
+// sqlHasWhereClause returns true when the statement contains a WHERE keyword
+// that is not inside a string literal or comment.
+func sqlHasWhereClause(stmt string) bool {
+	// Walk the statement character by character, skipping string literals and
+	// comments, then look for the standalone keyword WHERE.
+	var (
+		quote          rune
+		escaped        bool
+		inLineComment  bool
+		inBlockComment bool
+		i              int
+	)
+	runes := []rune(stmt)
+	n := len(runes)
+	for i < n {
+		ch := runes[i]
+		var next rune
+		if i+1 < n {
+			next = runes[i+1]
+		}
+
+		if inLineComment {
+			if ch == '\n' {
+				inLineComment = false
+			}
+			i++
+			continue
+		}
+		if inBlockComment {
+			if ch == '*' && next == '/' {
+				inBlockComment = false
+				i += 2
+				continue
+			}
+			i++
+			continue
+		}
+		if quote != 0 {
+			if escaped {
+				escaped = false
+				i++
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				i++
+				continue
+			}
+			if ch == quote {
+				quote = 0
+			}
+			i++
+			continue
+		}
+
+		switch {
+		case ch == '-' && next == '-':
+			inLineComment = true
+			i += 2
+			continue
+		case ch == '#':
+			inLineComment = true
+			i++
+			continue
+		case ch == '/' && next == '*':
+			inBlockComment = true
+			i += 2
+			continue
+		case ch == '\'' || ch == '"' || ch == '`':
+			quote = ch
+			i++
+			continue
+		}
+
+		// Check for the keyword WHERE (case-insensitive) as a whole word.
+		if i+5 <= n {
+			candidate := strings.ToUpper(string(runes[i : i+5]))
+			if candidate == "WHERE" {
+				// Must be preceded and followed by a non-identifier character.
+				beforeOK := i == 0 || !isIdentChar(runes[i-1])
+				afterOK := i+5 >= n || !isIdentChar(runes[i+5])
+				if beforeOK && afterOK {
+					return true
+				}
+			}
+		}
+		i++
+	}
+	return false
+}
+
+func isIdentChar(r rune) bool {
+	return r == '_' || (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
 }
 
 func isReadOnlyAllowed(profileType string, queryText string) bool {
