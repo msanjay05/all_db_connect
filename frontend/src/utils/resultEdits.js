@@ -6,7 +6,7 @@ export function inferEditableTableName(sql) {
     if (!/^select\b/i.test(statement) || /\bjoin\b/i.test(statement)) {
         return '';
     }
-    const match = statement.match(/\bfrom\s+((?:`[^`]+`|[A-Za-z0-9_$]+)(?:\s*\.\s*(?:`[^`]+`|[A-Za-z0-9_$]+))?)(?:\s+(?:as\s+)?(?:`[^`]+`|[A-Za-z0-9_$]+))?\s*(?:where\b|group\b|order\b|having\b|limit\b|$)/i);
+    const match = statement.match(/\bfrom\s+((?:`[^`]+`|"[^"]+"|[A-Za-z0-9_$]+)(?:\s*\.\s*(?:`[^`]+`|"[^"]+"|[A-Za-z0-9_$]+))?)(?:\s+(?:as\s+)?(?:`[^`]+`|"[^"]+"|[A-Za-z0-9_$]+))?\s*(?:where\b|group\b|order\b|having\b|limit\b|$)/i);
     if (!match) {
         return '';
     }
@@ -118,7 +118,7 @@ function quoteIdentifierPathForType(identifier, databaseType) {
 
 function quoteIdentifierForType(identifier, databaseType) {
     if (usesDoubleQuotedIdentifiers(databaseType)) {
-        if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(identifier)) {
+        if (/^[a-z_][a-z0-9_]*$/.test(identifier)) {
             return identifier;
         }
         return `"${String(identifier).replaceAll('"', '""')}"`;

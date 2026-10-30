@@ -1089,7 +1089,11 @@ function App() {
     }
 
     function insertTableReference(table) {
-        const text = `${quoteIdentifier(table.name)} ${buildAlias(table.name)}`;
+        const isPgOrSqlite = ['postgres', 'sqlite'].includes(selectedProfile?.type);
+        const quotedTable = isPgOrSqlite
+            ? (/^[a-z_][a-z0-9_]*$/.test(table.name) ? table.name : `"${table.name.replaceAll('"', '""')}"`)
+            : quoteIdentifier(table.name);
+        const text = `${quotedTable} ${buildAlias(table.name)}`;
         const editor = editorRef.current;
         if (!editor) {
             updateActiveTab((tab) => ({sql: `${tab.sql}${text}`}));

@@ -113,7 +113,7 @@ export function stripSqlComments(sql) {
 export function unquoteIdentifierPath(identifier) {
     return String(identifier || '')
         .split('.')
-        .map((part) => part.trim().replace(/^`|`$/g, '').replace(/``/g, '`'))
+        .map((part) => part.trim().replace(/^[`"]|[`"]$/g, '').replace(/``/g, '`').replace(/""/g, '"'))
         .filter(Boolean)
         .join('.');
 }

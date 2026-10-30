@@ -106,10 +106,23 @@ func (p postgresProvider) Schema(ctx context.Context, profile models.ConnectionP
 
 	tableRows, err := conn.QueryContext(
 		queryCtx,
-		`SELECT table_name, table_type
-		 FROM information_schema.tables
-		 WHERE table_schema = 'public'
-		 ORDER BY table_name`,
+		`SELECT
+			t.table_name,
+			t.table_type,
+			COALESCE(
+				CASE
+					WHEN s.n_live_tup IS NOT NULL AND s.n_live_tup > 0 THEN s.n_live_tup
+					WHEN c.reltuples > 0 THEN c.reltuples::bigint
+					ELSE COALESCE(s.n_live_tup, 0)
+				END,
+				0
+			) AS row_count
+		 FROM information_schema.tables t
+		 LEFT JOIN pg_namespace n ON n.nspname = t.table_schema
+		 LEFT JOIN pg_class c ON c.relname = t.table_name AND c.relnamespace = n.oid
+		 LEFT JOIN pg_stat_user_tables s ON s.relname = t.table_name AND s.schemaname = t.table_schema
+		 WHERE t.table_schema = 'public'
+		 ORDER BY t.table_name`,
 	)
 	if err != nil {
 		return models.SchemaInfo{}, fmt.Errorf("list tables: %w", err)
@@ -120,7 +133,7 @@ func (p postgresProvider) Schema(ctx context.Context, profile models.ConnectionP
 	schema := models.SchemaInfo{Database: profile.Database}
 	for tableRows.Next() {
 		var table models.TableInfo
-		if err := tableRows.Scan(&table.Name, &table.Type); err != nil {
+		if err := tableRows.Scan(&table.Name, &table.Type, &table.RowCount); err != nil {
 			return models.SchemaInfo{}, fmt.Errorf("scan table: %w", err)
 		}
 		tablesByName[table.Name] = len(schema.Tables)

@@ -61,11 +61,12 @@ function Sidebar({
                             options={connectionOptions}
                             placeholder="Select connection"
                             onChange={handleConnectionChange}
+                            searchable={profiles.length > 4}
+                            searchPlaceholder="Search connection..."
                         />
                         {selectedProfile && (
                             <div className="active-connection-meta" title={connectionTarget(selectedProfile)}>
                                 <span className="connection-status-icon connected" aria-hidden="true" />
-                                <DatabaseTypeIcon type={selectedProfile.type} />
                                 <small>{connectionTarget(selectedProfile)}</small>
                             </div>
                         )}
@@ -94,23 +95,25 @@ function Sidebar({
                         </svg>
                     </button>
                 </div>
-                <div className="connection-chips">
-                    {profiles.slice(0, 4).map((profile) => {
-                        const isActive = profile.id === selectedConnectionId;
-                        return (
-                            <button
-                                key={profile.id}
-                                className={isActive ? 'connection-chip active' : 'connection-chip'}
-                                onClick={() => selectProfile(profile)}
-                                title={`${connectionTarget(profile)} (${isActive ? 'connected' : 'disconnected'})`}
-                            >
-                                <span className={isActive ? 'connection-status-icon connected' : 'connection-status-icon disconnected'} aria-hidden="true" />
-                                <DatabaseTypeIcon type={profile.type} />
-                                {profile.name}
-                            </button>
-                        );
-                    })}
-                </div>
+                {profiles.length > 1 && (
+                    <div className="connection-chips">
+                        {profiles.slice(0, 4).map((profile) => {
+                            const isActive = profile.id === selectedConnectionId;
+                            return (
+                                <button
+                                    key={profile.id}
+                                    className={isActive ? 'connection-chip active' : 'connection-chip'}
+                                    onClick={() => selectProfile(profile)}
+                                    title={`${connectionTarget(profile)} (${isActive ? 'connected' : 'disconnected'})`}
+                                >
+                                    <span className={isActive ? 'connection-status-icon connected' : 'connection-status-icon disconnected'} aria-hidden="true" />
+                                    <DatabaseTypeIcon type={profile.type} />
+                                    {profile.name}
+                                </button>
+                            );
+                        })}
+                    </div>
+                )}
             </section>
 
             {showConnectionForm && (
@@ -226,6 +229,8 @@ function Sidebar({
                             placeholder="Select database"
                             disabled={!selectedConnectionId || databases.length === 0}
                             onChange={selectDatabase}
+                            searchable={true}
+                            searchPlaceholder="Search database..."
                         />
                         <button
                             className={isDefaultDatabase ? 'default-database-button active' : 'default-database-button'}
@@ -263,10 +268,12 @@ function Sidebar({
                                 <summary onDoubleClick={() => insertTableReference(table)}>
                                     <span className="table-name">
                                         <span className="table-icon" />
-                                        <span>{table.name}</span>
-                                        <small>{formatRowCount(table.rowCount)} rows</small>
+                                        <span className="table-label" title={table.name}>{table.name}</span>
                                     </span>
-                                    <span className="table-meta">{table.indexes?.length || 0} idx</span>
+                                    <span className="table-badges">
+                                        <span className="table-badge table-row-badge">{formatRowCount(table.rowCount)} rows</span>
+                                        <span className="table-badge table-idx-badge">{table.indexes?.length || 0} idx</span>
+                                    </span>
                                 </summary>
                                 {(table.columns || []).map((column) => (
                                     <div className="column-item" key={`${table.name}.${column.name}`}>
