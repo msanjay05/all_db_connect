@@ -34,6 +34,7 @@ import {
     formatSql,
     getCompletionWord,
     getExecutableSql,
+    inferDatabaseFromSql,
     quoteIdentifier,
 } from './utils/sql';
 import {
@@ -126,6 +127,9 @@ function App() {
     const [resultEditSuccess, setResultEditSuccess] = useState('');
     const [pendingUpdateBatch, setPendingUpdateBatch] = useState(null);
     const schemaRef = useRef(schema);
+    const databasesRef = useRef(databases);
+    const schemasCacheRef = useRef({});
+    const profilesRef = useRef(profiles);
     const mainRef = useRef(null);
     const editorRef = useRef(null);
     const completionProviderRef = useRef(null);
@@ -142,7 +146,18 @@ function App() {
 
     useEffect(() => {
         schemaRef.current = schema;
+        if (schema?.database) {
+            schemasCacheRef.current[schema.database.toLowerCase()] = schema;
+        }
     }, [schema]);
+
+    useEffect(() => {
+        databasesRef.current = databases;
+    }, [databases]);
+
+    useEffect(() => {
+        profilesRef.current = profiles;
+    }, [profiles]);
 
     useEffect(() => {
         refreshProfiles();
@@ -269,6 +284,9 @@ function App() {
     useEffect(() => {
         activeTabIdRef.current = activeTabId;
         queryTabsRef.current = queryTabs;
+        if (selectedConnectionIdRef.current !== selectedConnectionId) {
+            schemasCacheRef.current = {};
+        }
         selectedConnectionIdRef.current = selectedConnectionId;
         selectedDatabaseRef.current = selectedDatabase;
     }, [activeTabId, queryTabs, selectedConnectionId, selectedDatabase]);
@@ -724,12 +742,12 @@ function App() {
         }
     }
 
-    function selectDatabase(database) {
+    function selectDatabase(database, promptConfirm = true) {
         setSelectedDatabase(database);
         setStatus(`Selected database ${database}`);
         loadSchema(selectedConnectionId, database);
         const profile = profiles.find((item) => item.id === selectedConnectionId);
-        if (database && profile && profile.database !== database && window.confirm(`Set "${database}" as the default database for ${profile.name}?`)) {
+        if (promptConfirm && database && profile && profile.database !== database && window.confirm(`Set "${database}" as the default database for ${profile.name}?`)) {
             setDefaultDatabase(database);
         }
     }
@@ -804,8 +822,12 @@ function App() {
         }
         try {
             const loaded = await GetSchema({connectionId, database});
-            setSchema(loaded || {database: '', tables: []});
-            setStatus(`Loaded schema for ${loaded.database || 'connection'}`);
+            const valid = loaded || {database: '', tables: []};
+            setSchema(valid);
+            if (valid.database) {
+                schemasCacheRef.current[valid.database.toLowerCase()] = valid;
+            }
+            setStatus(`Loaded schema for ${valid.database || 'connection'}`);
         } catch (error) {
             setSchema({database: '', tables: []});
             setStatus(errorMessage(error));
@@ -828,7 +850,7 @@ function App() {
 
     async function executeCurrentSql(mode) {
         const connectionID = selectedConnectionIdRef.current;
-        const database = selectedDatabaseRef.current;
+        let database = selectedDatabaseRef.current;
         const tabId = activeTabIdRef.current;
         const tab = queryTabsRef.current.find((item) => item.id === tabId);
         const profile = profiles.find((item) => item.id === connectionID);
@@ -840,8 +862,29 @@ function App() {
             setStatus('Select or save a connection first');
             return;
         }
-        if (!database) {
-            setStatus('Select a database first');
+
+        const inferredDb = inferDatabaseFromSql(executableSql, databases);
+        if (inferredDb) {
+            database = inferredDb;
+            if (inferredDb !== selectedDatabaseRef.current) {
+                selectDatabase(inferredDb, false);
+            }
+        } else if (!database) {
+            if (profile?.database) {
+                database = profile.database;
+                selectDatabase(database, false);
+            } else if (databases.length === 1) {
+                database = databases[0];
+                selectDatabase(database, false);
+            } else if (profile?.type === 'postgres') {
+                database = 'postgres';
+            } else if (profile?.type === 'sqlite') {
+                database = 'main';
+            }
+        }
+
+        if (!database && profile?.type !== 'sqlite') {
+            setStatus('Select a database or qualify table with database name (e.g. db.table)');
             return;
         }
         if (mode === 'explain' && profile?.type === 'mongodb') {
@@ -1117,7 +1160,7 @@ function App() {
         completionProviderRef.current?.dispose?.();
         completionProviderRef.current = monaco.languages.registerCompletionItemProvider('sql', {
             triggerCharacters: ['.', ' '],
-            provideCompletionItems: (model, position) => {
+            provideCompletionItems: async (model, position) => {
                 const word = getCompletionWord(model, position);
                 const range = {
                     startLineNumber: position.lineNumber,
@@ -1126,8 +1169,39 @@ function App() {
                     endColumn: position.column,
                 };
                 const context = completionContext(model, position, word);
+                const activeProfile = profilesRef.current?.find?.((p) => p.id === selectedConnectionIdRef.current);
+                const profileType = activeProfile?.type || '';
+
+                if (context.aliasQualifier) {
+                    const qualifierLower = context.aliasQualifier.toLowerCase();
+                    const isKnownDb = (databasesRef.current || []).some(
+                        (db) => db.toLowerCase() === qualifierLower
+                    );
+                    if (isKnownDb && !schemasCacheRef.current[qualifierLower] && selectedConnectionIdRef.current) {
+                        try {
+                            const loaded = await GetSchema({
+                                connectionId: selectedConnectionIdRef.current,
+                                database: context.aliasQualifier,
+                            });
+                            if (loaded?.database) {
+                                schemasCacheRef.current[qualifierLower] = loaded;
+                            }
+                        } catch {
+                            // ignore schema prefetch failure
+                        }
+                    }
+                }
+
                 return {
-                    suggestions: buildSuggestions(monaco, schemaRef.current, context, range),
+                    suggestions: buildSuggestions(
+                        monaco,
+                        schemaRef.current,
+                        context,
+                        range,
+                        databasesRef.current,
+                        schemasCacheRef.current,
+                        profileType
+                    ),
                 };
             },
         });

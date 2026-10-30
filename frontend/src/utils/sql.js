@@ -1,5 +1,5 @@
-import {mysqlKeywords} from '../constants/query';
-import {lastIdentifierPart, sortColumnsByName} from './results';
+import {mysqlKeywords} from '../constants/query.js';
+import {lastIdentifierPart, sortColumnsByName} from './results.js';
 
 export function getExecutableSql(editor, fullSql) {
     if (!editor) {
@@ -110,12 +110,53 @@ export function stripSqlComments(sql) {
         .replace(/#[^\n\r]*/g, ' ');
 }
 
+export function unquoteIdentifier(identifier) {
+    return String(identifier || '').trim().replace(/^[`"]|[`"]$/g, '');
+}
+
 export function unquoteIdentifierPath(identifier) {
     return String(identifier || '')
         .split('.')
         .map((part) => part.trim().replace(/^[`"]|[`"]$/g, '').replace(/``/g, '`').replace(/""/g, '"'))
         .filter(Boolean)
         .join('.');
+}
+
+export function inferDatabaseFromSql(sql, knownDatabases = []) {
+    if (!sql) {
+        return '';
+    }
+    const cleaned = stripSqlComments(sql).trim();
+
+    const useMatch = cleaned.match(/\buse\s+([`"]?[A-Za-z0-9_$]+[`"]?)/i);
+    if (useMatch) {
+        const db = unquoteIdentifier(useMatch[1]);
+        if (db) {
+            return db;
+        }
+    }
+
+    const pattern = /\b(?:from|(?:(?:left|right|inner|cross|full)\s+)?join|update|into|table)\s+((?:`[^`]+`|"[^"]+"|[A-Za-z0-9_$]+)(?:\s*\.\s*(?:`[^`]+`|"[^"]+"|[A-Za-z0-9_$]+))+)/gi;
+    let match;
+    let firstCandidate = '';
+    while ((match = pattern.exec(cleaned)) !== null) {
+        const fullPath = unquoteIdentifierPath(match[1]);
+        const parts = fullPath.split('.').filter(Boolean);
+        if (parts.length >= 2) {
+            const candidate = parts[0];
+            if (knownDatabases && knownDatabases.length > 0) {
+                const found = knownDatabases.find((db) => db.toLowerCase() === candidate.toLowerCase());
+                if (found) {
+                    return found;
+                }
+            }
+            if (!firstCandidate) {
+                firstCandidate = candidate;
+            }
+        }
+    }
+
+    return firstCandidate;
 }
 
 export function quoteIdentifierPath(identifier) {
@@ -150,7 +191,7 @@ const JOIN_CLAUSE_KEYWORDS = new Set(['JOIN', 'LEFT JOIN', 'RIGHT JOIN', 'INNER 
 export function getCompletionWord(model, position) {
     const line = model.getLineContent(position.lineNumber);
     const textBefore = line.slice(0, position.column - 1);
-    const match = textBefore.match(/(`(?:[^`]|``)*`|[\w$]+)$/);
+    const match = textBefore.match(/(`(?:[^`]|``)*`?|"(?:[^"]|"")*"?|[\w$]+)$/);
     if (!match) {
         return {word: '', startColumn: position.column};
     }
@@ -164,33 +205,94 @@ export function completionContext(model, position, word = null) {
     const fullSql = model?.getValue?.() || '';
     const offset = model?.getOffsetAt?.(position) ?? fullSql.length;
     const beforeCursor = fullSql.slice(0, offset);
-    const aliasMatch = beforeCursor.match(/(?:^|[^\w`.])(`?[\w$]+`?)\.\w*$/);
+    const aliasMatch = beforeCursor.match(/(?:^|[^\w`."])((?:`[^`]+`|"[^"]+"|[A-Za-z0-9_$]+))\s*\.\s*[`"]?[A-Za-z0-9_$]*$/);
     const completionWord = word || getCompletionWord(model, position);
     return {
         fullSql,
         beforeCursor,
-        aliasQualifier: aliasMatch ? unquoteIdentifierPath(aliasMatch[1]) : '',
+        aliasQualifier: aliasMatch ? unquoteIdentifier(aliasMatch[1]) : '',
         word: completionWord.word,
         wordPrefix: completionWord.word.toLowerCase(),
     };
 }
 
-export function buildSuggestions(monaco, schema, context = {}, range) {
+export function buildDatabaseSuggestions(monaco, databases = [], range, profileType = '') {
+    const seen = new Set();
+    const suggestions = [];
+    for (const db of databases || []) {
+        if (!db || seen.has(db.toLowerCase())) {
+            continue;
+        }
+        seen.add(db.toLowerCase());
+        const quoted = quoteIdentifier(db, profileType);
+        suggestions.push({
+            label: db,
+            kind: monaco.languages.CompletionItemKind.Module,
+            insertText: quoted,
+            detail: 'Database',
+            sortText: `0_${db}`,
+            commitCharacters: ['.'],
+            range,
+        });
+    }
+    return suggestions;
+}
+
+export function buildSuggestions(
+    monaco,
+    schema,
+    context = {},
+    range,
+    databases = [],
+    schemasCache = {},
+    profileType = ''
+) {
     const prefix = context.wordPrefix || '';
     const tableRefs = parseSqlTableReferences(context.fullSql || context.beforeCursor || '');
-    const scopedTable = resolveSuggestionTable(schema, context, tableRefs);
-    const joinTableContext = isAfterJoinKeyword(context.beforeCursor);
-    const fromContinuationContext = isFromContinuationContext(context.beforeCursor);
-    const columnContext = isColumnExpressionContext(context.beforeCursor);
 
+    if (isUseStatementContext(context.beforeCursor)) {
+        return finalizeSuggestions(
+            buildDatabaseSuggestions(monaco, databases, range, profileType),
+            prefix
+        );
+    }
+
+    if (context.aliasQualifier) {
+        const qualifierLower = context.aliasQualifier.toLowerCase();
+        const matchedDb = (databases || []).find((db) => db.toLowerCase() === qualifierLower);
+        if (matchedDb) {
+            const targetSchema = (schemasCache && (schemasCache[qualifierLower] || schemasCache[matchedDb]))
+                || (schema?.database?.toLowerCase() === qualifierLower ? schema : null);
+            if (targetSchema) {
+                return finalizeSuggestions(
+                    buildTableSuggestions(monaco, targetSchema, range, true, profileType),
+                    prefix
+                );
+            }
+        }
+    }
+
+    const scopedTable = resolveSuggestionTable(schema, context, tableRefs, schemasCache);
     if (scopedTable) {
-        const columns = buildColumnSuggestions(monaco, scopedTable, range);
+        const columns = buildColumnSuggestions(monaco, scopedTable, range, profileType);
         const keywords = buildKeywordSuggestions(monaco, range, COLUMN_KEYWORDS);
         return finalizeSuggestions([...columns, ...keywords], prefix);
     }
 
+    const joinTableContext = isAfterJoinKeyword(context.beforeCursor);
+    const fromContinuationContext = isFromContinuationContext(context.beforeCursor);
+    const columnContext = isColumnExpressionContext(context.beforeCursor);
+
     if (joinTableContext) {
-        return finalizeSuggestions(buildTableSuggestions(monaco, schema, range), prefix);
+        if (!context.aliasQualifier) {
+            const dbSuggestions = buildDatabaseSuggestions(monaco, databases, range, profileType);
+            const tableSuggestions = buildTableSuggestions(monaco, schema, range, true, profileType);
+            return finalizeSuggestions([...dbSuggestions, ...tableSuggestions], prefix);
+        }
+        return finalizeSuggestions(
+            buildTableSuggestions(monaco, schema, range, true, profileType),
+            prefix
+        );
     }
 
     if (fromContinuationContext) {
@@ -203,7 +305,7 @@ export function buildSuggestions(monaco, schema, context = {}, range) {
     }
 
     if (columnContext && tableRefs.length > 1) {
-        const aliases = buildAliasSuggestions(monaco, tableRefs, schema, range);
+        const aliases = buildAliasSuggestions(monaco, tableRefs, schema, range, profileType);
         const keywords = buildKeywordSuggestions(monaco, range, COLUMN_KEYWORDS);
         return finalizeSuggestions([...aliases, ...keywords], prefix);
     }
@@ -212,19 +314,23 @@ export function buildSuggestions(monaco, schema, context = {}, range) {
         return [];
     }
 
-    return finalizeSuggestions(buildKeywordSuggestions(monaco, range), prefix);
+    const keywords = buildKeywordSuggestions(monaco, range);
+    const dbSuggestions = buildDatabaseSuggestions(monaco, databases, range, profileType);
+    const tableSuggestions = buildTableSuggestions(monaco, schema, range, true, profileType);
+    return finalizeSuggestions([...dbSuggestions, ...tableSuggestions, ...keywords], prefix);
 }
 
-export function buildColumnSuggestions(monaco, table, range) {
+export function buildColumnSuggestions(monaco, table, range, profileType = '') {
     return sortColumnsByName(table.columns || []).map((column) => ({
         label: column.name,
         kind: monaco.languages.CompletionItemKind.Field,
-        insertText: quoteIdentifier(column.name),
+        insertText: quoteIdentifier(column.name, profileType),
+        detail: column.type || 'Column',
         range,
     }));
 }
 
-function buildTableSuggestions(monaco, schema, range) {
+export function buildTableSuggestions(monaco, schema, range, withAlias = true, profileType = '') {
     const seenTables = new Set();
     const suggestions = [];
     for (const table of schema?.tables || []) {
@@ -233,18 +339,20 @@ function buildTableSuggestions(monaco, schema, range) {
         }
         seenTables.add(table.name);
         const alias = buildAlias(table.name);
+        const quotedTable = quoteIdentifier(table.name, profileType);
         suggestions.push({
             label: table.name,
             kind: monaco.languages.CompletionItemKind.Struct,
-            insertText: `${quoteIdentifier(table.name)} ${alias}`,
-            detail: `alias ${alias}`,
+            insertText: withAlias ? `${quotedTable} ${alias}` : quotedTable,
+            detail: withAlias ? `alias ${alias}` : 'Table',
+            sortText: `1_${table.name}`,
             range,
         });
     }
     return suggestions;
 }
 
-function buildAliasSuggestions(monaco, tableRefs, schema, range) {
+function buildAliasSuggestions(monaco, tableRefs, schema, range, profileType = '') {
     const seenAliases = new Set();
     const suggestions = [];
     for (const ref of tableRefs) {
@@ -258,7 +366,7 @@ function buildAliasSuggestions(monaco, tableRefs, schema, range) {
         suggestions.push({
             label: alias,
             kind: monaco.languages.CompletionItemKind.Variable,
-            insertText: `${quoteIdentifier(alias)}.`,
+            insertText: `${quoteIdentifier(alias, profileType)}.`,
             detail: table?.name || lastIdentifierPart(ref.name),
             range,
         });
@@ -308,14 +416,25 @@ function compareSuggestionLabels(left, right, prefix = '') {
     return left.localeCompare(right, undefined, {sensitivity: 'base'});
 }
 
-export function resolveSuggestionTable(schema, context, tableRefs = null) {
+export function resolveSuggestionTable(schema, context, tableRefs = null, schemasCache = {}) {
     const refs = tableRefs || parseSqlTableReferences(context.fullSql || context.beforeCursor || '');
     if (context.aliasQualifier) {
         const aliasRef = refs.find((ref) =>
             ref.alias.toLowerCase() === context.aliasQualifier.toLowerCase()
             || lastIdentifierPart(ref.name).toLowerCase() === context.aliasQualifier.toLowerCase(),
         );
-        return aliasRef ? findSchemaTable(schema, aliasRef.name) : null;
+        if (aliasRef) {
+            const parts = aliasRef.name.split('.');
+            let targetSchema = schema;
+            if (parts.length > 1) {
+                const dbPart = parts[0].toLowerCase();
+                if (schemasCache && (schemasCache[dbPart] || schemasCache[parts[0]])) {
+                    targetSchema = schemasCache[dbPart] || schemasCache[parts[0]];
+                }
+            }
+            return findSchemaTable(targetSchema, aliasRef.name);
+        }
+        return null;
     }
     if (refs.length !== 1) {
         return null;
@@ -323,9 +442,18 @@ export function resolveSuggestionTable(schema, context, tableRefs = null) {
     if (isAfterJoinKeyword(context.beforeCursor) || isFromContinuationContext(context.beforeCursor)) {
         return null;
     }
-    return isColumnExpressionContext(context.beforeCursor)
-        ? findSchemaTable(schema, refs[0].name)
-        : null;
+    if (isColumnExpressionContext(context.beforeCursor)) {
+        const parts = refs[0].name.split('.');
+        let targetSchema = schema;
+        if (parts.length > 1) {
+            const dbPart = parts[0].toLowerCase();
+            if (schemasCache && (schemasCache[dbPart] || schemasCache[parts[0]])) {
+                targetSchema = schemasCache[dbPart] || schemasCache[parts[0]];
+            }
+        }
+        return findSchemaTable(targetSchema, refs[0].name);
+    }
+    return null;
 }
 
 function fromClauseSegment(sql = '') {
@@ -338,13 +466,13 @@ function isCommaSeparatedFrom(fromClause = '') {
         return false;
     }
     const withoutParens = fromClause.replace(/\([^)]*\)/g, '');
-    return /,\s*(?:`[^`]+`|[A-Za-z0-9_$]+)/i.test(withoutParens);
+    return /,\s*(?:`[^`]+`|"[^"]+"|[A-Za-z0-9_$]+)/i.test(withoutParens);
 }
 
 export function parseSqlTableReferences(sql) {
     const refs = [];
     const cleaned = stripSqlComments(sql || '');
-    const tablePattern = /\b(?:from|(?:(?:left|right|inner|cross|full)\s+)?join)\s+((?:`[^`]+`|[A-Za-z0-9_$]+)(?:\s*\.\s*(?:`[^`]+`|[A-Za-z0-9_$]+))?)(?:\s+(?:as\s+)?(`[^`]+`|[A-Za-z0-9_$]+))?/gi;
+    const tablePattern = /\b(?:from|(?:(?:left|right|inner|cross|full)\s+)?join)\s+((?:`[^`]+`|"[^"]+"|[A-Za-z0-9_$]+)(?:\s*\.\s*(?:`[^`]+`|"[^"]+"|[A-Za-z0-9_$]+))?)(?:\s+(?:as\s+)?(`[^`]+`|"[^"]+"|[A-Za-z0-9_$]+))?/gi;
     let match;
     while ((match = tablePattern.exec(cleaned)) !== null) {
         const rawName = unquoteIdentifierPath(match[1]);
@@ -374,11 +502,16 @@ export function isTableNameContext(beforeCursor = '') {
     return isAfterJoinKeyword(beforeCursor);
 }
 
+export function isUseStatementContext(beforeCursor = '') {
+    const current = currentSqlStatement(beforeCursor);
+    return /\buse\s+[`"A-Za-z0-9_$]*\s*$/i.test(current);
+}
+
 export function isAfterJoinKeyword(beforeCursor = '') {
     const current = currentSqlStatement(beforeCursor);
     // Do not trim — trailing space means the user is typing a table name after FROM/JOIN.
-    return /\b(?:from|(?:(?:left|right|inner|cross|full)\s+)?join|into|update|table)\s+(?:[`\w$]+\s*\.\s*)?[`\w$]*\s*$/i.test(current)
-        || /\bdelete\s+from\s+[`\w$]*\s*$/i.test(current);
+    return /\b(?:from|(?:(?:left|right|inner|cross|full)\s+)?join|into|update|table)\s+(?:(?:`[^`]+`|"[^"]+"|[A-Za-z0-9_$]+)\s*\.\s*)?[`"A-Za-z0-9_$]*\s*$/i.test(current)
+        || /\bdelete\s+from\s+(?:(?:`[^`]+`|"[^"]+"|[A-Za-z0-9_$]+)\s*\.\s*)?[`"A-Za-z0-9_$]*\s*$/i.test(current);
 }
 
 export function isOnClauseContinuationContext(beforeCursor = '') {
@@ -399,7 +532,7 @@ export function isFromContinuationContext(beforeCursor = '') {
         return false;
     }
     const tail = current.trimEnd();
-    return /\b(?:from|(?:(?:left|right|inner|cross|full)\s+)?join)\s+(?:`[^`]+`|[\w$]+)(?:\s+(?:`[^`]+`|[\w$]+))?\s+$/i.test(tail);
+    return /\b(?:from|(?:(?:left|right|inner|cross|full)\s+)?join)\s+(?:`[^`]+`|"[^"]+"|[A-Za-z0-9_$]+)(?:\s+(?:`[^`]+`|"[^"]+"|[A-Za-z0-9_$]+))?\s+$/i.test(tail);
 }
 
 export function isColumnExpressionContext(beforeCursor = '') {
@@ -427,11 +560,18 @@ export function isSqlClauseKeyword(value = '') {
     return ['where', 'join', 'left', 'right', 'inner', 'outer', 'group', 'order', 'having', 'limit', 'on'].includes(String(value).toLowerCase());
 }
 
-export function quoteIdentifier(identifier) {
+export function quoteIdentifier(identifier, profileType = '') {
+    const isPostgres = profileType === 'postgres' || profileType === 'redshift';
+    if (isPostgres) {
+        if (/^[a-z_][a-z0-9_]*$/.test(identifier)) {
+            return identifier;
+        }
+        return `"${String(identifier).replaceAll('"', '""')}"`;
+    }
     if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(identifier)) {
         return identifier;
     }
-    return `\`${identifier.replaceAll('`', '``')}\``;
+    return `\`${String(identifier).replaceAll('`', '``')}\``;
 }
 
 export function buildAlias(name) {

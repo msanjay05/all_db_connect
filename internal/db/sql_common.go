@@ -177,3 +177,21 @@ func requireDatabase(databaseName string) (string, error) {
 	}
 	return databaseName, nil
 }
+
+var sqlQualifiedTablePattern = regexp.MustCompile(`(?i)\b(?:FROM|(?:(?:LEFT|RIGHT|INNER|CROSS|FULL)\s+)?JOIN|UPDATE|INTO|TABLE)\s+((?:` + "`" + `[^` + "`" + `]+` + "`" + `|"[^"]+"|[A-Za-z0-9_$]+)(?:\s*\.\s*(?:` + "`" + `[^` + "`" + `]+` + "`" + `|"[^"]+"|[A-Za-z0-9_$]+))+)`)
+var sqlUsePattern = regexp.MustCompile(`(?i)\bUSE\s+([` + "`" + `"]?[A-Za-z0-9_$]+[` + "`" + `"]?)`)
+
+func InferDatabaseFromSQL(sqlText string) string {
+	sqlText = strings.TrimSpace(sqlText)
+	if match := sqlUsePattern.FindStringSubmatch(sqlText); len(match) > 1 {
+		return strings.Trim(strings.TrimSpace(match[1]), "`\"")
+	}
+	if match := sqlQualifiedTablePattern.FindStringSubmatch(sqlText); len(match) > 1 {
+		fullPath := match[1]
+		parts := strings.Split(fullPath, ".")
+		if len(parts) >= 2 {
+			return strings.Trim(strings.TrimSpace(parts[0]), "`\"")
+		}
+	}
+	return ""
+}

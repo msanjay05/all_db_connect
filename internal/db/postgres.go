@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -29,9 +30,16 @@ func (p postgresProvider) TestConnection(ctx context.Context, profile models.Con
 }
 
 func (p postgresProvider) Execute(ctx context.Context, profile models.ConnectionProfile, password string, databaseName string, queryText string, limit int, onConnectionID func(int64)) (models.QueryResult, error) {
-	databaseName, err := requireDatabase(databaseName)
-	if err != nil {
-		return models.QueryResult{}, err
+	databaseName = strings.TrimSpace(databaseName)
+	if inferred := InferDatabaseFromSQL(queryText); inferred != "" {
+		databaseName = inferred
+	}
+	if databaseName == "" {
+		if strings.TrimSpace(profile.Database) != "" {
+			databaseName = strings.TrimSpace(profile.Database)
+		} else {
+			databaseName = "postgres"
+		}
 	}
 	profile.Database = databaseName
 	conn, err := openPostgres(profile, password)
@@ -39,7 +47,58 @@ func (p postgresProvider) Execute(ctx context.Context, profile models.Connection
 		return models.QueryResult{}, err
 	}
 	defer conn.Close()
-	return executeSQL(ctx, conn, queryText, limit, `SELECT pg_backend_pid()`, onConnectionID)
+
+	execSQLText := queryText
+	if containsDatabasePrefix(queryText, databaseName) {
+		if !schemaExists(ctx, conn, databaseName) {
+			execSQLText = stripDatabasePrefix(queryText, databaseName)
+		}
+	}
+
+	res, execErr := executeSQL(ctx, conn, execSQLText, limit, `SELECT pg_backend_pid()`, onConnectionID)
+	if execErr != nil && execSQLText == queryText && containsDatabasePrefix(queryText, databaseName) {
+		fallbackSQL := stripDatabasePrefix(queryText, databaseName)
+		if fallbackSQL != queryText {
+			if retryRes, retryErr := executeSQL(ctx, conn, fallbackSQL, limit, `SELECT pg_backend_pid()`, onConnectionID); retryErr == nil {
+				return retryRes, nil
+			}
+		}
+	}
+	return res, execErr
+}
+
+func containsDatabasePrefix(sqlText, dbName string) bool {
+	dbName = strings.TrimSpace(dbName)
+	if dbName == "" {
+		return false
+	}
+	pattern := `(?i)(?:^|[^A-Za-z0-9_$])(?:` + regexp.QuoteMeta(dbName) + `|"` + regexp.QuoteMeta(dbName) + `"|` + "`" + regexp.QuoteMeta(dbName) + "`" + `)\.`
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return false
+	}
+	return re.MatchString(sqlText)
+}
+
+func stripDatabasePrefix(sqlText, dbName string) string {
+	dbName = strings.TrimSpace(dbName)
+	if dbName == "" {
+		return sqlText
+	}
+	pattern := `(?i)(^|[^A-Za-z0-9_$])(?:` + regexp.QuoteMeta(dbName) + `|"` + regexp.QuoteMeta(dbName) + `"|` + "`" + regexp.QuoteMeta(dbName) + "`" + `)\.([A-Za-z0-9_$]+|"[^"]+"|\x60[^\x60]+\x60)`
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return sqlText
+	}
+	return re.ReplaceAllString(sqlText, "${1}${2}")
+}
+
+func schemaExists(ctx context.Context, conn *sql.DB, schemaName string) bool {
+	checkCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	var exists bool
+	_ = conn.QueryRowContext(checkCtx, `SELECT EXISTS(SELECT 1 FROM information_schema.schemata WHERE schema_name = $1)`, schemaName).Scan(&exists)
+	return exists
 }
 
 func (p postgresProvider) KillQuery(ctx context.Context, profile models.ConnectionProfile, password string, databaseName string, connectionID int64) error {
