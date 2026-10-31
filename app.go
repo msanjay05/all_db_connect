@@ -184,13 +184,12 @@ func (a *App) ExecuteQuery(request models.QueryRequest) (models.QueryResult, err
 	if inferred := workbenchdb.InferDatabaseFromSQL(request.SQL); inferred != "" {
 		selectedDatabase = inferred
 	} else if selectedDatabase == "" && workbenchdb.NormalizeType(profile.Type) != workbenchdb.TypeSQLite {
-		if strings.TrimSpace(profile.Database) != "" {
-			selectedDatabase = strings.TrimSpace(profile.Database)
-		} else if workbenchdb.NormalizeType(profile.Type) == workbenchdb.TypePostgres {
-			selectedDatabase = "postgres"
-		} else {
-			return models.QueryResult{}, fmt.Errorf("database is required")
-		}
+		return models.QueryResult{
+			Columns: []models.QueryColumn{},
+			Rows:    []map[string]interface{}{},
+			Success: false,
+			Error:   "database is required",
+		}, fmt.Errorf("database is required")
 	}
 
 	queryCtx, cancel := context.WithCancel(a.ctx)

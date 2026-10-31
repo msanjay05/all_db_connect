@@ -34,12 +34,10 @@ func (p postgresProvider) Execute(ctx context.Context, profile models.Connection
 	if inferred := InferDatabaseFromSQL(queryText); inferred != "" {
 		databaseName = inferred
 	}
-	if databaseName == "" {
-		if strings.TrimSpace(profile.Database) != "" {
-			databaseName = strings.TrimSpace(profile.Database)
-		} else {
-			databaseName = "postgres"
-		}
+	var err error
+	databaseName, err = requireDatabase(databaseName)
+	if err != nil {
+		return models.QueryResult{}, err
 	}
 	profile.Database = databaseName
 	conn, err := openPostgres(profile, password)

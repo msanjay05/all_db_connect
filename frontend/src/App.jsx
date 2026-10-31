@@ -869,22 +869,26 @@ function App() {
             if (inferredDb !== selectedDatabaseRef.current) {
                 selectDatabase(inferredDb, false);
             }
-        } else if (!database) {
-            if (profile?.database) {
-                database = profile.database;
-                selectDatabase(database, false);
-            } else if (databases.length === 1) {
-                database = databases[0];
-                selectDatabase(database, false);
-            } else if (profile?.type === 'postgres') {
-                database = 'postgres';
-            } else if (profile?.type === 'sqlite') {
-                database = 'main';
-            }
+        } else if (profile?.type === 'sqlite') {
+            database = 'main';
         }
 
         if (!database && profile?.type !== 'sqlite') {
-            setStatus('Select a database or qualify table with database name (e.g. db.table)');
+            const errorMsg = 'Database is required. Select a database first or qualify table with database name.';
+            setStatus(errorMsg);
+            updateQueryTab(tabId, {
+                sql: fullSql,
+                executedSql: executableSql,
+                result: {
+                    columns: [],
+                    rows: [],
+                    rowsAffected: 0,
+                    durationMs: 0,
+                    success: false,
+                    error: errorMsg,
+                },
+                resultPage: 1,
+            });
             return;
         }
         if (mode === 'explain' && profile?.type === 'mongodb') {

@@ -169,6 +169,116 @@ func openMongo(ctx context.Context, profile models.ConnectionProfile, password s
 var mongoShellRegex = regexp.MustCompile(`(?i)^\s*db(?:\.([A-Za-z0-9_$-]+)|\s*\.\s*getCollection\s*\(\s*['"]([^'"]+)['"]\s*\))\s*\.\s*([A-Za-z0-9_$]+)\s*\(([\s\S]*)\)\s*;?\s*$`)
 var mongoSQLRegex = regexp.MustCompile(`(?i)^\s*SELECT\s+.*?\s+FROM\s+(?:[` + "`" + `"'` + `]?[A-Za-z0-9_$]+[` + "`" + `"'` + `]?\s*\.\s*)?([` + "`" + `"'` + `]?[A-Za-z0-9_$-]+[` + "`" + `"'` + `]?)(?:\s+WHERE\s+([\s\S]*?))?(?:\s+LIMIT\s+(\d+))?\s*;?\s*$`)
 
+var objectIDRegex = regexp.MustCompile(`(?i)\b(?:new\s+)?ObjectId\s*\(\s*['"]([0-9a-fA-F]{24})['"]\s*\)`)
+var isoDateRegex = regexp.MustCompile(`(?i)\b(?:new\s+)?ISODate\s*\(\s*['"]([^'"]+)['"]\s*\)`)
+var numberLongRegex = regexp.MustCompile(`(?i)\bNumberLong\s*\(\s*['"]?(\d+)['"]?\s*\)`)
+var numberIntRegex = regexp.MustCompile(`(?i)\bNumberInt\s*\(\s*['"]?(\d+)['"]?\s*\)`)
+var trailingCommaRegex = regexp.MustCompile(`,\s*([\]}])`)
+var unquotedKeyRegex = regexp.MustCompile(`([{,]\s*)([A-Za-z0-9_$]+)\s*:`)
+
+func normalizeMongoJSON(input string) string {
+	s := strings.TrimSpace(input)
+	if s == "" {
+		return "{}"
+	}
+
+	// 1. Replace ObjectId(...) -> {"$oid": "..."}
+	s = objectIDRegex.ReplaceAllString(s, `{"$$oid": "$1"}`)
+
+	// 2. Replace ISODate(...) -> {"$date": "$1"}
+	s = isoDateRegex.ReplaceAllString(s, `{"$$date": "$1"}`)
+
+	// 3. Replace NumberLong(...) -> {"$numberLong": "$1"}
+	s = numberLongRegex.ReplaceAllString(s, `{"$$numberLong": "$1"}`)
+
+	// 4. Replace NumberInt(...) -> $1
+	s = numberIntRegex.ReplaceAllString(s, `$1`)
+
+	// 5. Convert single quotes to double quotes
+	s = convertSingleQuotesToDouble(s)
+
+	// 6. Quote unquoted keys: { key: 1 } -> { "key": 1 }
+	s = unquotedKeyRegex.ReplaceAllString(s, `$1"$2":`)
+
+	// 7. Remove trailing commas: { a: 1, } -> { a: 1 }
+	s = trailingCommaRegex.ReplaceAllString(s, `$1`)
+
+	return s
+}
+
+func convertSingleQuotesToDouble(input string) string {
+	var sb strings.Builder
+	inSingleQuote := false
+	inDoubleQuote := false
+	escaped := false
+
+	for _, r := range input {
+		if escaped {
+			if inSingleQuote && r == '\'' {
+				sb.WriteRune('\'')
+			} else if inSingleQuote && r == '"' {
+				sb.WriteString(`\"`)
+			} else {
+				sb.WriteRune('\\')
+				sb.WriteRune(r)
+			}
+			escaped = false
+			continue
+		}
+
+		if r == '\\' {
+			escaped = true
+			continue
+		}
+
+		if r == '"' && !inSingleQuote {
+			inDoubleQuote = !inDoubleQuote
+			sb.WriteRune(r)
+			continue
+		}
+
+		if r == '\'' && !inDoubleQuote {
+			inSingleQuote = !inSingleQuote
+			sb.WriteRune('"')
+			continue
+		}
+
+		if inSingleQuote && r == '"' {
+			sb.WriteString(`\"`)
+			continue
+		}
+
+		sb.WriteRune(r)
+	}
+
+	return sb.String()
+}
+
+func unmarshalMongoExtJSON(rawJSON string, target interface{}) error {
+	normalized := normalizeMongoJSON(rawJSON)
+	return bson.UnmarshalExtJSON([]byte(normalized), true, target)
+}
+
+func fixFilterID(doc bson.D) bson.D {
+	result := make(bson.D, 0, len(doc))
+	for _, elem := range doc {
+		if elem.Key == "_id" {
+			if strVal, ok := elem.Value.(string); ok && len(strVal) == 24 {
+				if oid, err := primitive.ObjectIDFromHex(strVal); err == nil {
+					// Match either ObjectID or String so it always works
+					elem.Value = bson.D{
+						{Key: "$in", Value: bson.A{oid, strVal}},
+					}
+				}
+			}
+		} else if nested, ok := elem.Value.(bson.D); ok {
+			elem.Value = fixFilterID(nested)
+		}
+		result = append(result, elem)
+	}
+	return result
+}
+
 func parseMongoCommand(queryText string, defaultLimit int) (bson.D, error) {
 	queryText = strings.TrimSpace(queryText)
 	if queryText == "" {
@@ -178,7 +288,7 @@ func parseMongoCommand(queryText string, defaultLimit int) (bson.D, error) {
 	// 1. Check if JSON command document: starts with {
 	if strings.HasPrefix(queryText, "{") {
 		var command bson.D
-		if err := bson.UnmarshalExtJSON([]byte(queryText), true, &command); err != nil {
+		if err := unmarshalMongoExtJSON(queryText, &command); err != nil {
 			return nil, fmt.Errorf("mongodb queries must be JSON command documents: %w", err)
 		}
 		if defaultLimit > 0 && isFindCommandWithoutLimit(command) {
@@ -203,12 +313,13 @@ func parseMongoCommand(queryText string, defaultLimit int) (bson.D, error) {
 			if argsRaw != "" {
 				args := splitMongoArgs(argsRaw)
 				if len(args) > 0 && strings.TrimSpace(args[0]) != "" {
-					if err := bson.UnmarshalExtJSON([]byte(args[0]), true, &filter); err != nil {
+					if err := unmarshalMongoExtJSON(args[0], &filter); err != nil {
 						return nil, fmt.Errorf("invalid find filter JSON: %w", err)
 					}
+					filter = fixFilterID(filter)
 				}
 				if len(args) > 1 && strings.TrimSpace(args[1]) != "" {
-					if err := bson.UnmarshalExtJSON([]byte(args[1]), true, &projection); err != nil {
+					if err := unmarshalMongoExtJSON(args[1], &projection); err != nil {
 						return nil, fmt.Errorf("invalid find projection JSON: %w", err)
 					}
 				}
@@ -230,9 +341,9 @@ func parseMongoCommand(queryText string, defaultLimit int) (bson.D, error) {
 		case "aggregate":
 			pipeline := bson.A{}
 			if argsRaw != "" {
-				if err := bson.UnmarshalExtJSON([]byte(argsRaw), true, &pipeline); err != nil {
+				if err := unmarshalMongoExtJSON(argsRaw, &pipeline); err != nil {
 					var singleStage bson.D
-					if err2 := bson.UnmarshalExtJSON([]byte(argsRaw), true, &singleStage); err2 == nil {
+					if err2 := unmarshalMongoExtJSON(argsRaw, &singleStage); err2 == nil {
 						pipeline = bson.A{singleStage}
 					} else {
 						return nil, fmt.Errorf("invalid aggregate pipeline JSON: %w", err)
@@ -251,9 +362,10 @@ func parseMongoCommand(queryText string, defaultLimit int) (bson.D, error) {
 			if argsRaw != "" {
 				args := splitMongoArgs(argsRaw)
 				if len(args) > 0 && strings.TrimSpace(args[0]) != "" {
-					if err := bson.UnmarshalExtJSON([]byte(args[0]), true, &filter); err != nil {
+					if err := unmarshalMongoExtJSON(args[0], &filter); err != nil {
 						return nil, fmt.Errorf("invalid count filter JSON: %w", err)
 					}
+					filter = fixFilterID(filter)
 				}
 			}
 			command := bson.D{
@@ -274,7 +386,8 @@ func parseMongoCommand(queryText string, defaultLimit int) (bson.D, error) {
 			}
 			if len(args) > 1 && strings.TrimSpace(args[1]) != "" {
 				var filter bson.D
-				if err := bson.UnmarshalExtJSON([]byte(args[1]), true, &filter); err == nil {
+				if err := unmarshalMongoExtJSON(args[1], &filter); err == nil {
+					filter = fixFilterID(filter)
 					command = append(command, bson.E{Key: "query", Value: filter})
 				}
 			}
@@ -305,7 +418,7 @@ func parseMongoCommand(queryText string, defaultLimit int) (bson.D, error) {
 	}
 
 	var command bson.D
-	if err := bson.UnmarshalExtJSON([]byte(queryText), true, &command); err != nil {
+	if err := unmarshalMongoExtJSON(queryText, &command); err != nil {
 		return nil, fmt.Errorf("mongodb queries must be shell expressions (e.g. db.collection.find()) or JSON command documents: %w", err)
 	}
 	return command, nil
