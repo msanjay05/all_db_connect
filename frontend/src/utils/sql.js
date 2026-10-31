@@ -238,6 +238,187 @@ export function buildDatabaseSuggestions(monaco, databases = [], range, profileT
     return suggestions;
 }
 
+export function inferMongoCollectionFromContext(text = '') {
+    const dbDot = text.match(/\bdb\s*\.\s*([A-Za-z0-9_$-]+)\s*\./i);
+    if (dbDot && dbDot[1] !== 'getCollection') {
+        return dbDot[1];
+    }
+    const getCol = text.match(/\bdb\s*\.\s*getCollection\s*\(\s*['"]([^'"]+)['"]\s*\)/i);
+    if (getCol) {
+        return getCol[1];
+    }
+    const jsonCol = text.match(/"(?:find|aggregate|count|distinct|insert|update|delete)"\s*:\s*"([^"]+)"/i);
+    if (jsonCol) {
+        return jsonCol[1];
+    }
+    const sqlFrom = text.match(/\bfrom\s+([A-Za-z0-9_$-]+)/i);
+    if (sqlFrom) {
+        return sqlFrom[1];
+    }
+    return '';
+}
+
+export function buildMongoSuggestions(monaco, schema, context = {}, range, databases = []) {
+    const prefix = context.wordPrefix || '';
+    const beforeCursor = context.beforeCursor || '';
+
+    // 1. If typing after "use "
+    if (/\buse\s+[`"A-Za-z0-9_$]*$/i.test(beforeCursor)) {
+        return finalizeSuggestions(buildDatabaseSuggestions(monaco, databases, range, 'mongodb'), prefix);
+    }
+
+    // 2. Check if typing collection after "db."
+    const dbDotMatch = beforeCursor.match(/(?:^|[^\w$])db\s*\.\s*([A-Za-z0-9_$-]*)$/i);
+    if (dbDotMatch) {
+        const colPrefix = dbDotMatch[1] || '';
+        const colSuggestions = (schema?.tables || []).map((table) => ({
+            label: table.name,
+            kind: monaco.languages.CompletionItemKind.Class,
+            insertText: table.name,
+            detail: `Collection (${table.rowCount || 0} docs)`,
+            sortText: `0_${table.name}`,
+            range,
+        }));
+
+        const dbMethods = [
+            {label: 'getCollection', insertText: "getCollection('$1')", detail: 'db.getCollection(name)'},
+            {label: 'createCollection', insertText: "createCollection('$1')", detail: 'db.createCollection(name)'},
+            {label: 'dropDatabase', insertText: 'dropDatabase()', detail: 'db.dropDatabase()'},
+            {label: 'stats', insertText: 'stats()', detail: 'db.stats()'},
+            {label: 'getName', insertText: 'getName()', detail: 'db.getName()'},
+        ].map((item) => ({
+            ...item,
+            kind: monaco.languages.CompletionItemKind.Method,
+            sortText: `1_${item.label}`,
+            range,
+        }));
+
+        return finalizeSuggestions([...colSuggestions, ...dbMethods], colPrefix.toLowerCase());
+    }
+
+    // 3. Check if typing method after "db.<collection>."
+    const methodMatch = beforeCursor.match(/(?:^|[^\w$])db\s*(?:\.\s*([A-Za-z0-9_$-]+)|\s*\.\s*getCollection\s*\(\s*['"]([^'"]+)['"]\s*\))\s*\.\s*([A-Za-z0-9_$]*)$/i);
+    if (methodMatch) {
+        const methodPrefix = methodMatch[3] || '';
+        const methods = [
+            {label: 'find', insertText: 'find({})', detail: 'find(filter, projection)'},
+            {label: 'findOne', insertText: 'findOne({})', detail: 'findOne(filter, projection)'},
+            {label: 'aggregate', insertText: 'aggregate([\n  $1\n])', detail: 'aggregate(pipeline)'},
+            {label: 'countDocuments', insertText: 'countDocuments({})', detail: 'countDocuments(filter)'},
+            {label: 'count', insertText: 'count({})', detail: 'count(filter)'},
+            {label: 'distinct', insertText: "distinct('$1', {})", detail: 'distinct(field, filter)'},
+            {label: 'insertOne', insertText: 'insertOne({})', detail: 'insertOne(document)'},
+            {label: 'insertMany', insertText: 'insertMany([])', detail: 'insertMany([documents])'},
+            {label: 'updateOne', insertText: 'updateOne({}, {})', detail: 'updateOne(filter, update)'},
+            {label: 'updateMany', insertText: 'updateMany({}, {})', detail: 'updateMany(filter, update)'},
+            {label: 'deleteOne', insertText: 'deleteOne({})', detail: 'deleteOne(filter)'},
+            {label: 'deleteMany', insertText: 'deleteMany({})', detail: 'deleteMany(filter)'},
+            {label: 'drop', insertText: 'drop()', detail: 'drop collection'},
+            {label: 'createIndex', insertText: 'createIndex({})', detail: 'createIndex(keys, options)'},
+            {label: 'getIndexes', insertText: 'getIndexes()', detail: 'getIndexes()'},
+        ].map((item) => ({
+            ...item,
+            kind: monaco.languages.CompletionItemKind.Method,
+            sortText: `0_${item.label}`,
+            range,
+        }));
+
+        return finalizeSuggestions(methods, methodPrefix.toLowerCase());
+    }
+
+    // 4. Try to infer current collection from cursor context
+    const collectionInContext = inferMongoCollectionFromContext(beforeCursor);
+    const targetTable = collectionInContext
+        ? (schema?.tables || []).find((t) => t.name.toLowerCase() === collectionInContext.toLowerCase())
+        : (schema?.tables?.length === 1 ? schema.tables[0] : null);
+
+    const mongoOperators = [
+        '$eq', '$ne', '$gt', '$gte', '$lt', '$lte', '$in', '$nin',
+        '$and', '$or', '$not', '$nor',
+        '$exists', '$type', '$regex', '$text', '$where',
+        '$all', '$elemMatch', '$size',
+        '$set', '$unset', '$inc', '$mul', '$rename', '$min', '$max',
+        '$push', '$addToSet', '$pop', '$pull', '$pullAll',
+        '$match', '$group', '$project', '$sort', '$limit', '$skip',
+        '$lookup', '$unwind', '$addFields', '$count', '$facet',
+        '$sum', '$avg', '$first', '$last',
+    ].map((op) => ({
+        label: op,
+        kind: monaco.languages.CompletionItemKind.Keyword,
+        insertText: `"${op}"`,
+        detail: 'MongoDB Operator',
+        sortText: `1_${op}`,
+        range,
+    }));
+
+    const fieldSuggestions = targetTable
+        ? (targetTable.columns || []).map((col) => ({
+            label: col.name,
+            kind: monaco.languages.CompletionItemKind.Field,
+            insertText: `"${col.name}"`,
+            detail: `${col.type || 'Field'} (${targetTable.name})`,
+            sortText: `0_${col.name}`,
+            range,
+        }))
+        : [];
+
+    const jsonCommandKeys = [
+        {label: 'find', insertText: '"find": "$1"', detail: 'Command: find collection'},
+        {label: 'filter', insertText: '"filter": {$1}', detail: 'Find filter'},
+        {label: 'projection', insertText: '"projection": {$1}', detail: 'Find projection'},
+        {label: 'sort', insertText: '"sort": {$1}', detail: 'Sort order'},
+        {label: 'limit', insertText: '"limit": 100', detail: 'Limit results'},
+        {label: 'skip', insertText: '"skip": 0', detail: 'Skip results'},
+        {label: 'aggregate', insertText: '"aggregate": "$1"', detail: 'Command: aggregate collection'},
+        {label: 'pipeline', insertText: '"pipeline": [\n  $1\n]', detail: 'Aggregation pipeline'},
+        {label: 'count', insertText: '"count": "$1"', detail: 'Command: count collection'},
+        {label: 'distinct', insertText: '"distinct": "$1"', detail: 'Command: distinct'},
+    ].map((item) => ({
+        ...item,
+        kind: monaco.languages.CompletionItemKind.Property,
+        sortText: `2_${item.label}`,
+        range,
+    }));
+
+    const colListSuggestions = (schema?.tables || []).map((table) => ({
+        label: table.name,
+        kind: monaco.languages.CompletionItemKind.Class,
+        insertText: `"${table.name}"`,
+        detail: `Collection (${table.rowCount || 0} docs)`,
+        sortText: `0_${table.name}`,
+        range,
+    }));
+
+    const dbSuggestions = (databases || []).map((db) => ({
+        label: db,
+        kind: monaco.languages.CompletionItemKind.Module,
+        insertText: `"${db}"`,
+        detail: 'Database',
+        sortText: `3_${db}`,
+        range,
+    }));
+
+    const dbObjectSuggestion = {
+        label: 'db',
+        kind: monaco.languages.CompletionItemKind.Variable,
+        insertText: 'db.',
+        detail: 'Current database reference',
+        sortText: '0_db',
+        range,
+    };
+
+    const all = [
+        dbObjectSuggestion,
+        ...colListSuggestions,
+        ...fieldSuggestions,
+        ...mongoOperators,
+        ...jsonCommandKeys,
+        ...dbSuggestions,
+    ];
+
+    return finalizeSuggestions(all, prefix);
+}
+
 export function buildSuggestions(
     monaco,
     schema,
@@ -247,6 +428,10 @@ export function buildSuggestions(
     schemasCache = {},
     profileType = ''
 ) {
+    if (profileType === 'mongodb') {
+        return buildMongoSuggestions(monaco, schema, context, range, databases);
+    }
+
     const prefix = context.wordPrefix || '';
     const tableRefs = parseSqlTableReferences(context.fullSql || context.beforeCursor || '');
 

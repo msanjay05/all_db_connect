@@ -6,9 +6,9 @@ const editorOptions = {
     fontSize: 14,
     automaticLayout: true,
     wordWrap: 'on',
-    snippetSuggestions: 'none',
+    snippetSuggestions: 'top',
     wordBasedSuggestions: 'off',
-    quickSuggestions: {other: true, comments: false, strings: false},
+    quickSuggestions: {other: true, comments: false, strings: true},
     suggestOnTriggerCharacters: true,
     acceptSuggestionOnCommitCharacter: false,
     tabCompletion: 'on',
@@ -25,6 +25,7 @@ function SqlEditor({tabId, connectionId, initialSql, language, onMount, onSqlCha
         <Editor
             key={`${connectionId}:${tabId}`}
             height="100%"
+            language={language}
             defaultLanguage={language}
             theme="vs-dark"
             defaultValue={initialSql || ''}

@@ -9,11 +9,11 @@ export const mysqlKeywords = [
 
 export const DEFAULT_RESULT_PAGE_SIZE = 50;
 
-export function createQueryTab(id) {
+export function createQueryTab(id, profileType = '') {
     return {
         id,
         title: `Query ${id}`,
-        sql: 'SELECT * FROM ',
+        sql: profileType === 'mongodb' ? 'db.' : 'SELECT * FROM ',
         limit: 100,
         result: null,
         showFilters: false,

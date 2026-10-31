@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -37,7 +38,7 @@ func (p mongoProvider) Execute(ctx context.Context, profile models.ConnectionPro
 	if err != nil {
 		return models.QueryResult{}, err
 	}
-	command, err := parseMongoCommand(queryText)
+	command, err := parseMongoCommand(queryText, limit)
 	if err != nil {
 		return models.QueryResult{}, err
 	}
@@ -165,16 +166,224 @@ func openMongo(ctx context.Context, profile models.ConnectionProfile, password s
 	return client, nil
 }
 
-func parseMongoCommand(queryText string) (bson.D, error) {
+var mongoShellRegex = regexp.MustCompile(`(?i)^\s*db(?:\.([A-Za-z0-9_$-]+)|\s*\.\s*getCollection\s*\(\s*['"]([^'"]+)['"]\s*\))\s*\.\s*([A-Za-z0-9_$]+)\s*\(([\s\S]*)\)\s*;?\s*$`)
+var mongoSQLRegex = regexp.MustCompile(`(?i)^\s*SELECT\s+.*?\s+FROM\s+(?:[` + "`" + `"'` + `]?[A-Za-z0-9_$]+[` + "`" + `"'` + `]?\s*\.\s*)?([` + "`" + `"'` + `]?[A-Za-z0-9_$-]+[` + "`" + `"'` + `]?)(?:\s+WHERE\s+([\s\S]*?))?(?:\s+LIMIT\s+(\d+))?\s*;?\s*$`)
+
+func parseMongoCommand(queryText string, defaultLimit int) (bson.D, error) {
 	queryText = strings.TrimSpace(queryText)
 	if queryText == "" {
 		return nil, fmt.Errorf("query is empty")
 	}
+
+	// 1. Check if JSON command document: starts with {
+	if strings.HasPrefix(queryText, "{") {
+		var command bson.D
+		if err := bson.UnmarshalExtJSON([]byte(queryText), true, &command); err != nil {
+			return nil, fmt.Errorf("mongodb queries must be JSON command documents: %w", err)
+		}
+		if defaultLimit > 0 && isFindCommandWithoutLimit(command) {
+			command = append(command, bson.E{Key: "limit", Value: int64(defaultLimit)})
+		}
+		return command, nil
+	}
+
+	// 2. Check if MongoDB shell syntax: db.collection.method(...)
+	if match := mongoShellRegex.FindStringSubmatch(queryText); len(match) > 4 {
+		colName := match[1]
+		if colName == "" {
+			colName = match[2]
+		}
+		method := strings.ToLower(match[3])
+		argsRaw := strings.TrimSpace(match[4])
+
+		switch method {
+		case "find", "findone":
+			filter := bson.D{}
+			var projection bson.D
+			if argsRaw != "" {
+				args := splitMongoArgs(argsRaw)
+				if len(args) > 0 && strings.TrimSpace(args[0]) != "" {
+					if err := bson.UnmarshalExtJSON([]byte(args[0]), true, &filter); err != nil {
+						return nil, fmt.Errorf("invalid find filter JSON: %w", err)
+					}
+				}
+				if len(args) > 1 && strings.TrimSpace(args[1]) != "" {
+					if err := bson.UnmarshalExtJSON([]byte(args[1]), true, &projection); err != nil {
+						return nil, fmt.Errorf("invalid find projection JSON: %w", err)
+					}
+				}
+			}
+			command := bson.D{
+				{Key: "find", Value: colName},
+				{Key: "filter", Value: filter},
+			}
+			if len(projection) > 0 {
+				command = append(command, bson.E{Key: "projection", Value: projection})
+			}
+			if method == "findone" {
+				command = append(command, bson.E{Key: "limit", Value: int64(1)})
+			} else if defaultLimit > 0 {
+				command = append(command, bson.E{Key: "limit", Value: int64(defaultLimit)})
+			}
+			return command, nil
+
+		case "aggregate":
+			pipeline := bson.A{}
+			if argsRaw != "" {
+				if err := bson.UnmarshalExtJSON([]byte(argsRaw), true, &pipeline); err != nil {
+					var singleStage bson.D
+					if err2 := bson.UnmarshalExtJSON([]byte(argsRaw), true, &singleStage); err2 == nil {
+						pipeline = bson.A{singleStage}
+					} else {
+						return nil, fmt.Errorf("invalid aggregate pipeline JSON: %w", err)
+					}
+				}
+			}
+			command := bson.D{
+				{Key: "aggregate", Value: colName},
+				{Key: "pipeline", Value: pipeline},
+				{Key: "cursor", Value: bson.D{}},
+			}
+			return command, nil
+
+		case "count", "countdocuments":
+			filter := bson.D{}
+			if argsRaw != "" {
+				args := splitMongoArgs(argsRaw)
+				if len(args) > 0 && strings.TrimSpace(args[0]) != "" {
+					if err := bson.UnmarshalExtJSON([]byte(args[0]), true, &filter); err != nil {
+						return nil, fmt.Errorf("invalid count filter JSON: %w", err)
+					}
+				}
+			}
+			command := bson.D{
+				{Key: "count", Value: colName},
+				{Key: "query", Value: filter},
+			}
+			return command, nil
+
+		case "distinct":
+			args := splitMongoArgs(argsRaw)
+			if len(args) == 0 || strings.TrimSpace(args[0]) == "" {
+				return nil, fmt.Errorf("distinct requires a field name argument")
+			}
+			fieldName := strings.Trim(strings.TrimSpace(args[0]), `"'`)
+			command := bson.D{
+				{Key: "distinct", Value: colName},
+				{Key: "key", Value: fieldName},
+			}
+			if len(args) > 1 && strings.TrimSpace(args[1]) != "" {
+				var filter bson.D
+				if err := bson.UnmarshalExtJSON([]byte(args[1]), true, &filter); err == nil {
+					command = append(command, bson.E{Key: "query", Value: filter})
+				}
+			}
+			return command, nil
+
+		case "drop":
+			return bson.D{{Key: "drop", Value: colName}}, nil
+		}
+	}
+
+	// 3. Check if SQL SELECT query: SELECT * FROM collection
+	if match := mongoSQLRegex.FindStringSubmatch(queryText); len(match) > 1 {
+		colName := strings.Trim(match[1], "`\"'")
+		command := bson.D{
+			{Key: "find", Value: colName},
+			{Key: "filter", Value: bson.D{}},
+		}
+		limitVal := defaultLimit
+		if len(match) > 3 && match[3] != "" {
+			if l, err := strconv.Atoi(match[3]); err == nil && l > 0 {
+				limitVal = l
+			}
+		}
+		if limitVal > 0 {
+			command = append(command, bson.E{Key: "limit", Value: int64(limitVal)})
+		}
+		return command, nil
+	}
+
 	var command bson.D
 	if err := bson.UnmarshalExtJSON([]byte(queryText), true, &command); err != nil {
-		return nil, fmt.Errorf("mongodb queries must be JSON command documents: %w", err)
+		return nil, fmt.Errorf("mongodb queries must be shell expressions (e.g. db.collection.find()) or JSON command documents: %w", err)
 	}
 	return command, nil
+}
+
+func splitMongoArgs(argsStr string) []string {
+	var args []string
+	var current strings.Builder
+	depthBrace := 0
+	depthBracket := 0
+	inQuote := false
+	var quoteChar rune
+	escaped := false
+
+	for _, r := range argsStr {
+		if escaped {
+			current.WriteRune(r)
+			escaped = false
+			continue
+		}
+		if r == '\\' {
+			current.WriteRune(r)
+			escaped = true
+			continue
+		}
+		if inQuote {
+			current.WriteRune(r)
+			if r == quoteChar {
+				inQuote = false
+			}
+			continue
+		}
+		if r == '"' || r == '\'' {
+			inQuote = true
+			quoteChar = r
+			current.WriteRune(r)
+			continue
+		}
+		if r == '{' {
+			depthBrace++
+		} else if r == '}' {
+			depthBrace--
+		} else if r == '[' {
+			depthBracket++
+		} else if r == ']' {
+			depthBracket--
+		}
+
+		if r == ',' && depthBrace == 0 && depthBracket == 0 {
+			trimmed := strings.TrimSpace(current.String())
+			if trimmed != "" {
+				args = append(args, trimmed)
+			}
+			current.Reset()
+			continue
+		}
+		current.WriteRune(r)
+	}
+
+	trimmed := strings.TrimSpace(current.String())
+	if trimmed != "" {
+		args = append(args, trimmed)
+	}
+	return args
+}
+
+func isFindCommandWithoutLimit(command bson.D) bool {
+	hasFind := false
+	hasLimit := false
+	for _, elem := range command {
+		if elem.Key == "find" {
+			hasFind = true
+		}
+		if elem.Key == "limit" {
+			hasLimit = true
+		}
+	}
+	return hasFind && !hasLimit
 }
 
 func mongoCommandResult(response bson.M) models.QueryResult {

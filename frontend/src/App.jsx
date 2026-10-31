@@ -441,7 +441,7 @@ function App() {
         window.clearTimeout(persistSqlTimeoutRef.current);
         flushActiveTabSql();
         const nextId = Math.max(...queryTabs.map((tab) => tab.id), 0) + 1;
-        setQueryTabs((currentTabs) => [...currentTabs, createQueryTab(nextId)]);
+        setQueryTabs((currentTabs) => [...currentTabs, createQueryTab(nextId, selectedProfile?.type)]);
         setActiveTabId(nextId);
     }
 
@@ -1133,10 +1133,16 @@ function App() {
 
     function insertTableReference(table) {
         const isPgOrSqlite = ['postgres', 'sqlite'].includes(selectedProfile?.type);
-        const quotedTable = isPgOrSqlite
-            ? (/^[a-z_][a-z0-9_]*$/.test(table.name) ? table.name : `"${table.name.replaceAll('"', '""')}"`)
-            : quoteIdentifier(table.name);
-        const text = `${quotedTable} ${buildAlias(table.name)}`;
+        const isMongo = selectedProfile?.type === 'mongodb';
+        let text;
+        if (isMongo) {
+            text = `db.${table.name}.find({})`;
+        } else if (isPgOrSqlite) {
+            const quotedTable = /^[a-z_][a-z0-9_]*$/.test(table.name) ? table.name : `"${table.name.replaceAll('"', '""')}"`;
+            text = `${quotedTable} ${buildAlias(table.name)}`;
+        } else {
+            text = `${quoteIdentifier(table.name)} ${buildAlias(table.name)}`;
+        }
         const editor = editorRef.current;
         if (!editor) {
             updateActiveTab((tab) => ({sql: `${tab.sql}${text}`}));
@@ -1158,53 +1164,59 @@ function App() {
             runQueryRef.current();
         });
         completionProviderRef.current?.dispose?.();
-        completionProviderRef.current = monaco.languages.registerCompletionItemProvider('sql', {
-            triggerCharacters: ['.', ' '],
-            provideCompletionItems: async (model, position) => {
-                const word = getCompletionWord(model, position);
-                const range = {
-                    startLineNumber: position.lineNumber,
-                    endLineNumber: position.lineNumber,
-                    startColumn: word.startColumn,
-                    endColumn: position.column,
-                };
-                const context = completionContext(model, position, word);
-                const activeProfile = profilesRef.current?.find?.((p) => p.id === selectedConnectionIdRef.current);
-                const profileType = activeProfile?.type || '';
+        const supportedLangs = ['sql', 'json', 'javascript'];
+        const providers = supportedLangs.map((lang) =>
+            monaco.languages.registerCompletionItemProvider(lang, {
+                triggerCharacters: ['.', ' ', '"', '$', '{', "'"],
+                provideCompletionItems: async (model, position) => {
+                    const word = getCompletionWord(model, position);
+                    const range = {
+                        startLineNumber: position.lineNumber,
+                        endLineNumber: position.lineNumber,
+                        startColumn: word.startColumn,
+                        endColumn: position.column,
+                    };
+                    const context = completionContext(model, position, word);
+                    const activeProfile = profilesRef.current?.find?.((p) => p.id === selectedConnectionIdRef.current);
+                    const profileType = activeProfile?.type || '';
 
-                if (context.aliasQualifier) {
-                    const qualifierLower = context.aliasQualifier.toLowerCase();
-                    const isKnownDb = (databasesRef.current || []).some(
-                        (db) => db.toLowerCase() === qualifierLower
-                    );
-                    if (isKnownDb && !schemasCacheRef.current[qualifierLower] && selectedConnectionIdRef.current) {
-                        try {
-                            const loaded = await GetSchema({
-                                connectionId: selectedConnectionIdRef.current,
-                                database: context.aliasQualifier,
-                            });
-                            if (loaded?.database) {
-                                schemasCacheRef.current[qualifierLower] = loaded;
+                    if (context.aliasQualifier) {
+                        const qualifierLower = context.aliasQualifier.toLowerCase();
+                        const isKnownDb = (databasesRef.current || []).some(
+                            (db) => db.toLowerCase() === qualifierLower
+                        );
+                        if (isKnownDb && !schemasCacheRef.current[qualifierLower] && selectedConnectionIdRef.current) {
+                            try {
+                                const loaded = await GetSchema({
+                                    connectionId: selectedConnectionIdRef.current,
+                                    database: context.aliasQualifier,
+                                });
+                                if (loaded?.database) {
+                                    schemasCacheRef.current[qualifierLower] = loaded;
+                                }
+                            } catch {
+                                // ignore schema prefetch failure
                             }
-                        } catch {
-                            // ignore schema prefetch failure
                         }
                     }
-                }
 
-                return {
-                    suggestions: buildSuggestions(
-                        monaco,
-                        schemaRef.current,
-                        context,
-                        range,
-                        databasesRef.current,
-                        schemasCacheRef.current,
-                        profileType
-                    ),
-                };
-            },
-        });
+                    return {
+                        suggestions: buildSuggestions(
+                            monaco,
+                            schemaRef.current,
+                            context,
+                            range,
+                            databasesRef.current,
+                            schemasCacheRef.current,
+                            profileType
+                        ),
+                    };
+                },
+            })
+        );
+        completionProviderRef.current = {
+            dispose: () => providers.forEach((p) => p.dispose()),
+        };
         editor.focus();
     }
 
@@ -1327,7 +1339,7 @@ function App() {
                                     tabId={activeTab?.id || 'empty'}
                                     connectionId={selectedConnectionId}
                                     initialSql={activeTab?.sql || ''}
-                                    language={selectedProfile?.type === 'mongodb' ? 'json' : 'sql'}
+                                    language={selectedProfile?.type === 'mongodb' ? 'javascript' : 'sql'}
                                     onMount={handleEditorMount}
                                     onSqlChange={handleEditorSqlChange}
                                 />
